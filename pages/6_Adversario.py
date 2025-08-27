@@ -43,4 +43,4 @@ if not opp_stats:
 
 # forma recente (últimos 5 jogos)
 opp_fixtures = api_client.fixtures(opponent["id"], season)
-opp_last5 = sorted(opp_fixtures, key
+opp_last5 = sorted(opp_fixtures, key)
