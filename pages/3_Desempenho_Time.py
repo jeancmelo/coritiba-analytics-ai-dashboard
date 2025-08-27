@@ -63,4 +63,16 @@ with c1:
     st.subheader("⚽ Gols Pró por faixa de minuto")
     df_gf = df_minute(gf)
     if not df_gf.empty:
-        st.plotly_chart(px.bar(df_gf, x="min
+        st.plotly_chart(px.bar(df_gf, x="minuto", y="total"), use_container_width=True)
+    else:
+        st.info("Sem dados de gols pró por minuto.")
+
+with c2:
+    st.subheader("🥅 Gols Contra por faixa de minuto")
+    df_ga = df_minute(ga)
+    if not df_ga.empty:
+        st.plotly_chart(px.bar(df_ga, x="minuto", y="total"), use_container_width=True)
+    else:
+        st.info("Sem dados de gols contra por minuto.")
+
+st.caption("Fonte: API-Football — /teams/statistics (liga=72, team=147)")
