@@ -1,3 +1,8 @@
-# Coritiba Analytics AI v2
+# Coritiba Analytics AI — Streamlit (v2)
 
-Projeto completo reconstruído.
+MVP com API-Football + OpenAI (SDK novo).
+
+## Rodar local
+```bash
+pip install -r requirements.txt
+streamlit run app.py
