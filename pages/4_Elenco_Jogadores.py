@@ -2,27 +2,65 @@ import streamlit as st
 import pandas as pd
 from core import api_client, ui_utils
 
-st.title("🧑‍🤝‍🧑 Elenco & Jogadores")
+# IDs fixos (mantém alinhado com core/api_client.py)
+CORITIBA_ID = 147
+SERIE_B_ID = 72
 
-# filtros globais
+st.title("🧑‍🤝‍🧑 Elenco & Jogadores — Profissional")
+
+# ---------------------------------
+# Filtros globais
+# ---------------------------------
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
+only_pro = st.sidebar.toggle("Somente elenco profissional ativo (Série B)", value=True)
+page = st.sidebar.number_input("Página (API)", min_value=1, value=1, step=1)
+
+# Header com logos
 team = api_client.find_team("Coritiba")
 league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-# header com logos
 h1, h2, h3 = st.columns([1, 4, 1])
 with h1:
     ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
 with h2:
-    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
+    title_suffix = " (Profissional)" if only_pro else ""
+    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}{title_suffix}")
 with h3:
     ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
 
-st.caption("Lista de atletas com métricas básicas. Use os filtros para refinar.")
+st.caption("Dados vindos de /players. Quando o filtro de **profissional** está ligado, mostramos apenas quem atuou/está inscrito pelo Coritiba na Série B.")
 
-# paginação do endpoint /players (API-Football pagina os resultados)
-page = st.sidebar.number_input("Página (API)", min_value=1, value=1, step=1)
+# ---------------------------------
+# Funções auxiliares de filtro
+# ---------------------------------
+def pick_professional_stats(stats_list):
+    """
+    Escolhe do vetor statistics[] somente a entrada:
+    - da Série B (league.id = 72) OU league.name contém 'Serie B'
+    - do Coritiba (team.id = 147) OU team.name = 'Coritiba'
+    - com minutos > 0 OU aparições > 0
+    Retorna o dicionário stats válido ou None.
+    """
+    if not stats_list:
+        return None
+    for s in stats_list:
+        league = s.get("league", {}) or {}
+        team_ = s.get("team", {}) or {}
+        games = s.get("games", {}) or {}
 
+        league_ok = (league.get("id") == SERIE_B_ID) or ("serie b" in str(league.get("name","")).lower())
+        team_ok = (team_.get("id") == CORITIBA_ID) or (str(team_.get("name","")).lower() == "coritiba")
+        minutes = games.get("minutes") or 0
+        apps = games.get("appearences") or 0
+        contributed = (minutes > 0) or (apps > 0)
+
+        if league_ok and team_ok and contributed:
+            return s
+    return None
+
+# ---------------------------------
+# Busca bruta (paginada) e filtragem
+# ---------------------------------
 raw = api_client.api_get("players", {"team": team["team_id"], "season": season, "page": page})
 if not raw:
     st.warning("Sem dados de jogadores para esta temporada/página.")
@@ -31,20 +69,28 @@ if not raw:
 rows = []
 for item in raw:
     player = item.get("player", {}) or {}
-    stats_list = item.get("statistics") or [{}]
-    stats = stats_list[0] if stats_list else {}
+    stats_list = item.get("statistics") or []
 
-    games = stats.get("games", {}) or {}
-    goals = stats.get("goals", {}) or {}
-    shots = stats.get("shots", {}) or {}
-    passes = stats.get("passes", {}) or {}
-    duels = stats.get("duels", {}) or {}
-    cards = stats.get("cards", {}) or {}
+    # Quando only_pro=True, filtra por Série B + Coritiba + minutos/aparições
+    if only_pro:
+        s = pick_professional_stats(stats_list)
+        if not s:
+            continue
+    else:
+        # Sem filtro: usa a primeira estatística disponível (se houver)
+        s = (stats_list[0] if stats_list else {}) or {}
+
+    games = s.get("games", {}) or {}
+    goals = s.get("goals", {}) or {}
+    shots = s.get("shots", {}) or {}
+    passes = s.get("passes", {}) or {}
+    duels = s.get("duels", {}) or {}
+    cards = s.get("cards", {}) or {}
 
     minutes = games.get("minutes") or 0
     played = games.get("appearences") or 0
     position = games.get("position") or "-"
-    rating = stats.get("games", {}).get("rating")
+    rating = games.get("rating")
     try:
         rating = float(rating) if rating else None
     except Exception:
@@ -90,7 +136,16 @@ for item in raw:
 
 df = pd.DataFrame(rows)
 
-# filtros de UI
+if df.empty:
+    if only_pro:
+        st.info("Nenhum atleta do elenco profissional do Coritiba com minutos/aparições na Série B nessa temporada/página.")
+    else:
+        st.info("Nenhum atleta retornado para esta página.")
+    st.stop()
+
+# ---------------------------------
+# Filtros de UI (posição + ordenação)
+# ---------------------------------
 posicoes = ["Todos"] + sorted([p for p in df["pos"].dropna().unique() if p])
 pos_sel = st.selectbox("Filtrar por posição", posicoes, index=0)
 
@@ -115,7 +170,9 @@ df_view = df_view.sort_values(ordens[ordem_sel], ascending=asc, na_position="las
 
 st.divider()
 
-# render cards de jogadores
+# ---------------------------------
+# Render dos cards de jogadores
+# ---------------------------------
 for _, r in df_view.iterrows():
     card = st.container()
     cimg, cmain, cnums = card.columns([1, 3, 3])
@@ -147,4 +204,4 @@ for _, r in df_view.iterrows():
 
     st.markdown("---")
 
-st.caption("Fonte: API-Football — /players (com paginação por `page`).")
+st.caption("Fonte: API-Football — /players (filtrado por time=147; quando ativo, liga=72 e minutos/aparições > 0).")
