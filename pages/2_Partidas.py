@@ -4,217 +4,231 @@ from core import api_client, ui_utils
 
 st.title("📅 Partidas — Calendário & Detalhes")
 
-# ---- filtros globais
+# --------------------------------------------
+# Filtros e cabeçalho
+# --------------------------------------------
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
 
 team = api_client.find_team("Coritiba")
 league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-# ---- header com logos
-header1, header2, header3 = st.columns([1, 4, 1])
-with header1:
+h1, h2, h3 = st.columns([1, 4, 1])
+with h1:
     ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
-with header2:
+with h2:
     st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
-with header3:
+with h3:
     ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
 
-# ---- cache leve dos fixtures da temporada
-@st.cache_data(show_spinner=False, ttl=300)
-def _get_fixtures(team_id: int, season: int):
-    fx = api_client.fixtures(team_id, season)
-    for m in fx:
-        m["_date"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
-    fx = sorted(fx, key=lambda x: x.get("_date") or pd.Timestamp(0), reverse=True)
-    return fx
-
-fixtures = _get_fixtures(team["team_id"], season)
+# --------------------------------------------
+# Carregamento de fixtures (uma vez)
+# --------------------------------------------
+fixtures = api_client.fixtures(team["team_id"], season)
 if not fixtures:
     st.warning("Nenhuma partida encontrada para os filtros atuais.")
     st.stop()
 
-# ---- estado: quantos jogos mostrar
-key_show = f"fx_show_{season}"
-if key_show not in st.session_state:
-    st.session_state[key_show] = 10
+# ordena da mais recente para a mais antiga
+for it in fixtures:
+    it["_date"] = pd.to_datetime(it["fixture"]["date"], errors="coerce")
+fixtures = sorted(fixtures, key=lambda x: x.get("_date") or pd.Timestamp(0), reverse=True)
 
-limit = st.session_state[key_show]
-subset = fixtures[:limit]
+# --------------------------------------------
+# Filtro: Somente disputados / Somente futuros / Todos
+# --------------------------------------------
+def is_played(fx) -> bool:
+    stt = (fx["fixture"].get("status") or {}).get("short", "")
+    # finalizados pela API: FT, AET, PEN (e às vezes "FT" como long)
+    return stt in {"FT", "AET", "PEN"}
 
-st.caption("Clique em **Ver detalhes** para abrir estatísticas, eventos e lineups. Use o botão abaixo para carregar mais partidas.")
+def is_future(fx) -> bool:
+    stt = (fx["fixture"].get("status") or {}).get("short", "")
+    return stt in {"NS", "PST", "TBD"}  # not started / postponed / to be defined
 
-# ======================
-# helpers de formatação
-# ======================
-STAT_KEYS = [
-    ("Total Shots", "Chutes"),
-    ("Shots on Goal", "SOT"),
-    ("Ball Possession", "Posse (%)"),
-    ("Corner Kicks", "Escanteios"),
-    ("Fouls", "Faltas"),
-    ("Offsides", "Impedimentos"),
-    ("Yellow Cards", "Amarelos"),
-    ("Red Cards", "Vermelhos"),
-    ("Passes accurate", "Passes certos"),
-]
+mostrar = st.sidebar.selectbox(
+    "Mostrar",
+    ["Somente já disputados", "Somente futuros", "Todos"],
+    index=0
+)
 
-def _to_num(v):
-    if v is None: 
-        return None
-    if isinstance(v, str) and v.endswith("%"):
-        try: 
-            return float(v.replace("%", "").strip())
-        except Exception: 
-            return v
-    try:
-        return float(v)
-    except Exception:
-        return v
+if mostrar == "Somente já disputados":
+    fixtures = [f for f in fixtures if is_played(f)]
+elif mostrar == "Somente futuros":
+    fixtures = [f for f in fixtures if is_future(f)]
+# (se "Todos", mantém a lista)
 
-def _stats_table(stats_blocks):
-    """Converte /fixtures/statistics em um DF Home x Away com chaves comuns."""
-    if not stats_blocks: 
-        return None
-    # identifica quem é home e away pelas IDs do próprio bloco (o caller precisa informar?)
-    # aqui só montamos dois dicionários (primeiro bloco = time A, segundo = time B)
-    # e usamos os nomes entregues pela API
-    rows = []
-    teams = []
-    for b in stats_blocks:
-        tname = (b.get("team") or {}).get("name") or "Time"
-        teams.append(tname)
-        items = b.get("statistics") or []
-        m = {}
-        for api_key, label in STAT_KEYS:
-            val = next((x.get("value") for x in items if (x.get("type") or "").lower() == api_key.lower()), None)
-            m[label] = _to_num(val)
-        rows.append(m)
-    if len(rows) == 0:
-        return None
-    # monta tabela transposta (linhas = métricas, colunas = times)
-    df = pd.DataFrame(rows, index=teams).T.reset_index().rename(columns={"index": "Métrica"})
-    return df
+# --------------------------------------------
+# Paginação incremental (10 por vez)
+# --------------------------------------------
+key_n = f"n_rows_{season}_{mostrar.replace(' ','_')}"
+if key_n not in st.session_state:
+    st.session_state[key_n] = 10  # mostra 10 inicialmente
 
-def _render_lineup_grid(block, title="Lineup"):
-    if not block:
-        st.info("Sem lineups disponíveis.")
-        return
-    tname = (block.get("team") or {}).get("name")
-    tlogo = (block.get("team") or {}).get("logo")
-    form = block.get("formation") or "?"
-    st.markdown(f"**{title}: {tname}** — formação `{form}`")
-    if tlogo:
-        ui_utils.load_image(tlogo, size=24, alt=f"Logo {tname}")
-    start11 = block.get("startXI") or []
-    if start11:
-        st.caption("Titulares:")
-        cols = st.columns(4)
-        i = 0
-        for pl in start11:
-            p = pl.get("player", {}) or {}
-            with cols[i % 4]:
-                st.write(p.get("name") or "-")
-            i += 1
+show_n = st.session_state[key_n]
+fixtures_view = fixtures[:show_n]
 
-def _events_list(events):
-    if not events:
-        st.info("Sem eventos disponíveis.")
-        return
-    # tabela compacta: minuto, time, tipo, detalhe, jogador
-    rows = []
-    for ev in events:
-        minute = (ev.get("time") or {}).get("elapsed")
-        tname = (ev.get("team") or {}).get("name")
-        etype = ev.get("type")
-        detail = ev.get("detail")
-        player = (ev.get("player") or {}).get("name")
-        rows.append({"Min": minute, "Time": tname, "Tipo": etype, "Detalhe": detail, "Jogador": player})
-    df = pd.DataFrame(rows)
-    df = df.sort_values("Min", kind="mergesort")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+# Botão "carregar mais"
+colm1, colm2 = st.columns([1, 6])
+with colm1:
+    if st.button("Carregar mais 10", use_container_width=True):
+        st.session_state[key_n] = min(show_n + 10, len(fixtures))
+        st.experimental_rerun()
+with colm2:
+    st.caption(f"Mostrando {min(show_n, len(fixtures))} de {len(fixtures)} jogos ({mostrar.lower()}).")
 
-# ======================
-# render por partida
-# ======================
-for fx in subset:
+st.divider()
+
+# --------------------------------------------
+# Render por jogo (somente os N exibidos)
+# --------------------------------------------
+OUR_ID = team["team_id"]
+
+def _stats_to_df(blocks):
+    """Converte /fixtures/statistics em dois DataFrames (nosso time x adversário)."""
+    if not blocks:
+        return None, None, None, None
+    me = None; opp = None
+    for b in blocks:
+        tid = (b.get("team") or {}).get("id")
+        if tid == OUR_ID:
+            me = b
+        else:
+            opp = b
+    if not me and not opp:
+        return None, None, None, None
+
+    def to_df(b):
+        if not b:
+            return pd.DataFrame(columns=["Métrica","Valor"])
+        rows = []
+        for it in (b.get("statistics") or []):
+            t = it.get("type")
+            v = it.get("value")
+            # normaliza % que vem como string "55%"
+            if isinstance(v, str) and v.endswith("%"):
+                try:
+                    v = float(v.replace("%","").strip())
+                except Exception:
+                    pass
+            rows.append({"Métrica": t, "Valor": v})
+        return pd.DataFrame(rows)
+
+    df_me = to_df(me)
+    df_opp = to_df(opp)
+    me_name = (me or {}).get("team", {}).get("name")
+    opp_name = (opp or {}).get("team", {}).get("name")
+    return df_me, df_opp, me_name, opp_name
+
+for fx in fixtures_view:
     f = fx["fixture"]
     lg = fx["league"]
-    th = fx["teams"]["home"]; ta = fx["teams"]["away"]
+    home = fx["teams"]["home"]; away = fx["teams"]["away"]
+    is_home = (home["id"] == OUR_ID)
     gh, ga = fx["goals"]["home"], fx["goals"]["away"]
 
-    cont = st.container()
-    topL, topC, topR = cont.columns([3, 3, 3])
+    # hero do jogo
+    hero = st.container()
+    cL, cT, cR = hero.columns([3, 4, 3])
+    with cL:
+        ui_utils.load_image(home["logo"], size=40, alt=home["name"])
+        st.markdown(f"**{home['name']}**")
+    with cT:
+        score_txt = f"{int(gh)} : {int(ga)}" if gh is not None and ga is not None else f"{f['status']['short']}"
+        st.markdown(f"<h2 style='text-align:center;margin:0'>{score_txt}</h2>", unsafe_allow_html=True)
+        st.caption(f"<p style='text-align:center;margin:0'>{pd.to_datetime(f['date']).strftime('%d/%m/%Y %H:%M')}</p>", unsafe_allow_html=True)
+    with cR:
+        ui_utils.load_image(away["logo"], size=40, alt=away["name"])
+        st.markdown(f"**{away['name']}**")
 
-    with topL:
-        row = st.columns([1, 5, 1, 5])
-        with row[0]:
-            ui_utils.load_image(th["logo"], size=36, alt=th["name"])
-        with row[1]:
-            st.write(f"**{th['name']}**")
-        with row[2]:
-            ui_utils.load_image(ta["logo"], size=36, alt=ta["name"])
-        with row[3]:
-            st.write(f"**{ta['name']}**")
+    meta1, meta2 = st.columns([2, 2])
+    with meta1:
+        st.caption(f"Liga: {lg.get('name')} • {lg.get('round')}")
+    with meta2:
+        st.caption(f"Status: {f.get('status',{}).get('long','-')}")
 
-    with topC:
-        if gh is not None and ga is not None:
-            st.subheader(f"{int(gh)} : {int(ga)}")
+    # detalhes sob demanda
+    with st.expander("Ver detalhes"):
+        # ----------------------------
+        # Estatísticas (formatadas)
+        # ----------------------------
+        st.markdown("**Estatísticas do jogo**")
+        try:
+            blocks = api_client.fixture_statistics(f["id"])
+        except Exception:
+            blocks = []
+
+        df_me, df_opp, me_name, opp_name = _stats_to_df(blocks)
+        if df_me is not None:
+            cs1, cs2 = st.columns(2)
+            with cs1:
+                st.markdown(f"**{me_name or 'Nosso time'}**")
+                if df_me.empty:
+                    st.info("Sem estatísticas do nosso time.")
+                else:
+                    st.dataframe(df_me, use_container_width=True, hide_index=True)
+            with cs2:
+                st.markdown(f"**{opp_name or 'Adversário'}**")
+                if df_opp.empty:
+                    st.info("Sem estatísticas do adversário.")
+                else:
+                    st.dataframe(df_opp, use_container_width=True, hide_index=True)
         else:
-            st.caption(f.get("status", {}).get("long") or f.get("status", {}).get("short", ""))
+            st.info("Sem estatísticas disponíveis para este jogo.")
 
-    with topR:
-        st.caption(f"Data: {pd.to_datetime(f['date']).strftime('%d/%m/%Y %H:%M')}")
-        st.caption(f"Liga: {lg['name']} • {lg.get('round','-')}")
+        st.markdown("---")
 
-    # ---- detalhes sob demanda
-    with st.expander("Ver detalhes", expanded=False):
-        colA, colB = st.columns([1, 2])
+        # ----------------------------
+        # Eventos (timeline simples)
+        # ----------------------------
+        st.markdown("**Eventos (timeline)**")
+        try:
+            evs = api_client.fixture_events(f["id"])
+        except Exception:
+            evs = []
 
-        with colA:
-            st.markdown("**Estatísticas do jogo**")
-            with st.spinner("Carregando estatísticas…"):
-                try:
-                    stats_blocks = api_client.fixture_statistics(int(f["id"]))
-                except Exception:
-                    stats_blocks = []
-            df_stats = _stats_table(stats_blocks)
-            if df_stats is not None and not df_stats.empty:
-                st.dataframe(df_stats, use_container_width=True, hide_index=True)
-            else:
-                st.info("Estatísticas não disponíveis para este fixture.")
+        if evs:
+            for ev in evs:
+                minute = ev.get("time", {}).get("elapsed")
+                tname = ev.get("team", {}).get("name")
+                player = (ev.get("player") or {}).get("name") or "-"
+                etype = ev.get("type") or "-"
+                detail = ev.get("detail") or ""
+                st.write(f"- {minute}' • {tname}: {etype} {f'({detail})' if detail else ''} — {player}")
+        else:
+            st.info("Sem eventos disponíveis.")
 
-            st.markdown("**Eventos (timeline)**")
-            with st.spinner("Carregando eventos…"):
-                try:
-                    events = api_client.fixture_events(int(f["id"]))
-                except Exception:
-                    events = []
-            _events_list(events)
+        st.markdown("---")
 
-        with colB:
-            st.markdown("**Lineups & Formações**")
-            with st.spinner("Carregando lineups…"):
-                try:
-                    fl = api_client.fixture_lineups(int(f["id"]))
-                except Exception:
-                    fl = []
-            if fl:
-                # separa lineup do mandante e do visitante
-                l_home = next((b for b in fl if (b.get("team") or {}).get("id") == th["id"]), None)
-                l_away = next((b for b in fl if (b.get("team") or {}).get("id") == ta["id"]), None)
-                _render_lineup_grid(l_home, title="Mandante")
-                st.markdown("")  # espaçamento
-                _render_lineup_grid(l_away, title="Visitante")
-            else:
-                st.info("Sem lineups disponíveis.")
+        # ----------------------------
+        # Lineups (grade de titulares)
+        # ----------------------------
+        st.markdown("**Lineups & formações**")
+        try:
+            lineups = api_client.fixture_lineups(f["id"])
+        except Exception:
+            lineups = []
+
+        if not lineups:
+            st.info("Sem lineups disponíveis.")
+        else:
+            for block in lineups:
+                tname = (block.get("team") or {}).get("name")
+                tlogo = (block.get("team") or {}).get("logo")
+                form = block.get("formation") or "?"
+                st.markdown(f"**{tname}** — formação: `{form}`")
+                ui_utils.load_image(tlogo, size=28, alt=f"Logo {tname}")
+
+                start11 = block.get("startXI") or []
+                if start11:
+                    st.caption("Titulares:")
+                    grid_cols = st.columns(4)
+                    i = 0
+                    for pl in start11:
+                        p = pl.get("player", {}) or {}
+                        with grid_cols[i % 4]:
+                            st.write(p.get("name") or "-")
+                        i += 1
+                else:
+                    st.info("Titulares não informados.")
 
     st.markdown("---")
-
-# ---- paginação: carregar mais 10
-remaining = max(len(fixtures) - limit, 0)
-if remaining > 0:
-    if st.button(f"Carregar mais {min(10, remaining)} partidas…"):
-        st.session_state[key_show] += 10
-        st.rerun()
-else:
-    st.caption("Você já visualizou todas as partidas desta temporada.")
