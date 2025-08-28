@@ -1,4 +1,3 @@
-# pages/10_Insights_IA.py
 import json
 import pandas as pd
 import streamlit as st
@@ -6,57 +5,39 @@ from core import api_client, ui_utils, ai
 
 st.title("🧠 Insights com IA — Hub")
 
-# ---------------------------------------------------------------------
-# Filtros
-# ---------------------------------------------------------------------
+# ------------------------------- filtros ------------------------------
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
 team = api_client.find_team("Coritiba")
 league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-h1, h2, h3 = st.columns([1, 4, 1])
-with h1:
-    ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
-with h2:
-    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
-with h3:
-    ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
+c1, c2, c3 = st.columns([1,4,1])
+with c1: ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
+with c2: st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
+with c3: ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
+st.caption("Central de inteligência: insights automáticos e respostas por prompt.")
 
-st.caption("Central de inteligência: insights automáticos e respostas orientadas por prompt, usando dados da Série B.")
-
-# ---------------------------------------------------------------------
-# Coleta de contexto (enxuto e robusto)
-# ---------------------------------------------------------------------
+# -------------------------- contexto enxuto/robusto -------------------
 with st.expander("📦 Coletando dados de contexto", expanded=False):
-    st.caption("O contexto inclui estatísticas agregadas da temporada, últimos jogos, standings e próximo adversário.")
+    st.caption("Estatísticas, últimos jogos, ranking e próximo adversário.")
 
-# team statistics
 stats = api_client.team_statistics(league["league_id"], season, team["team_id"])
 stats = stats[0] if isinstance(stats, list) and stats else stats
 
-# standings (posição)
 rank = None
 try:
     std = api_client.standings(league["league_id"], season)
     table = std[0]["league"]["standings"][0]
     for row in table:
         if row["team"]["id"] == team["team_id"]:
-            rank = row["rank"]
-            break
+            rank = row["rank"]; break
 except Exception:
     pass
 
-# últimos jogos (até 10) — usando pandas para datetimes
 fixtures = api_client.fixtures(team["team_id"], season) or []
 for m in fixtures:
-    try:
-        m["_d"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
-    except Exception:
-        m["_d"] = pd.NaT
-fixtures = sorted(
-    fixtures,
-    key=lambda x: x.get("_d") if x.get("_d") is not None else pd.Timestamp(0),
-    reverse=True,
-)
+    try: m["_d"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
+    except Exception: m["_d"] = pd.NaT
+fixtures = sorted(fixtures, key=lambda x: x.get("_d") if x.get("_d") is not None else pd.Timestamp(0), reverse=True)
 
 last_games = []
 for fx in fixtures[:10]:
@@ -72,13 +53,12 @@ for fx in fixtures[:10]:
         res = "V" if our_goals > opp_goals else ("D" if our_goals < opp_goals else "E")
     last_games.append({
         "date": str((fx.get("fixture") or {}).get("date"))[:19],
-        "home": home.get("name", "-"),
-        "away": away.get("name", "-"),
+        "home": home.get("name","-"),
+        "away": away.get("name","-"),
         "score": f"{gh}-{ga}",
         "res": res
     })
 
-# próximo adversário
 next_fx = api_client.fixtures(team["team_id"], season, next=1)
 next_context = None
 if next_fx:
@@ -96,6 +76,7 @@ if next_fx:
     }
 
 context = {
+    "mode": "auto",
     "season": season,
     "league": league,
     "team": team,
@@ -105,97 +86,85 @@ context = {
     "next_fixture": next_context,
 }
 
-# ---------------------------------------------------------------------
-# Debug curto do contexto e saúde da IA
-# ---------------------------------------------------------------------
-with st.expander("🔧 Debug da IA", expanded=False):
-    try_sizes = {k: (len(v) if isinstance(v, list) else v) for k, v in context.items()}
-    st.code(json.dumps(try_sizes, ensure_ascii=False, indent=2))
-    st.caption(f"Modelo: {ai._DEFAULT_MODEL} • OPENAI_API_KEY definido? {'✅' if bool(st.secrets.get('OPENAI_API_KEY') or st.session_state.get('OPENAI_API_KEY') or True) else '❓'}")
-    
-# ---------------------------------------------------------------------
-# Renderizador de cartões
-# ---------------------------------------------------------------------
-def _render_cards(cards):
+# ------------------------------- debug curto --------------------------
+with st.expander("🔧 Debug da IA (resumo)", expanded=False):
+    summary = {k: (len(v) if isinstance(v, list) else ("<obj>" if isinstance(v, dict) else v))
+               for k, v in context.items()}
+    st.code(json.dumps(summary, ensure_ascii=False, indent=2))
+    if st.checkbox("Ver JSON bruto do contexto (truncado)"):
+        raw = json.dumps(context, ensure_ascii=False, indent=2)
+        st.code(raw[:4000] + ("...\n(truncado)" if len(raw)>4000 else ""))
+
+# -------------------------- renderizador de cartões -------------------
+def render_cards(cards):
     for ins in cards:
         with st.container(border=True):
-            st.caption(ins.get("type", "insight"))
-            st.subheader(ins.get("title", "(sem título)"))
-            st.write(ins.get("summary", ""))
-
-            colx, coly = st.columns(2)
-            with colx:
+            st.caption(ins.get("type","insight"))
+            st.subheader(ins.get("title","(sem título)"))
+            st.write(ins.get("summary",""))
+            col1, col2 = st.columns(2)
+            with col1:
                 st.write("**Por que importa**")
-                st.write(ins.get("why_it_matters", ""))
-            with coly:
+                st.write(ins.get("why_it_matters",""))
+            with col2:
                 st.write("**Ação sugerida**")
-                st.write(ins.get("recommended_action", ""))
-
+                st.write(ins.get("recommended_action",""))
             ev = ins.get("evidence") or []
             if ev:
                 st.markdown("**Evidências**")
                 for e in ev:
-                    lbl = e.get("label","-")
-                    val = e.get("value","-")
-                    base = e.get("baseline")
-                    unit = e.get("unit","")
-                    base_txt = f" • baseline: {base}" if base is not None else ""
-                    st.markdown(f"- **{lbl}**: {val}{unit}{base_txt}")
-
-            meta = []
+                    lbl = e.get("label","-"); val = e.get("value","-")
+                    base = e.get("baseline"); unit = e.get("unit","")
+                    st.markdown(f"- **{lbl}**: {val}{unit}" + (f" • baseline: {base}" if base is not None else ""))
+            meta=[]
             if ins.get("severity"): meta.append(f"Severidade: {ins['severity']}")
             if ins.get("confidence") is not None: meta.append(f"Conf.: {ins['confidence']}")
             if ins.get("timeframe"): meta.append(f"Janela: {ins['timeframe']}")
-            if meta:
-                st.caption(" • ".join(meta))
+            if meta: st.caption(" • ".join(meta))
 
-# ---------------------------------------------------------------------
-# Insights automáticos
-# ---------------------------------------------------------------------
+# --------------------------- insights automáticos ---------------------
 st.subheader("⚡ Insights automáticos")
-
 if st.button("🔁 Regerar insights automáticos"):
     st.session_state.pop("auto_cards", None)
 
 if "auto_cards" not in st.session_state:
     try:
-        with st.spinner("Gerando insights automáticos…"):
-            st.session_state["auto_cards"] = ai.generate_insights(context, mode="auto")
+        with st.spinner("Gerando insights…"):
+            st.session_state["auto_cards"] = ai.generate_insights(context, mode="auto", max_cards=6)
     except ai.AIError as e:
         st.session_state["auto_cards"] = []
         st.error(f"Falha na IA: {e}")
 
-auto_cards = st.session_state.get("auto_cards") or []
-if not auto_cards:
+cards = st.session_state.get("auto_cards") or []
+if not cards:
     st.info("A IA não retornou insights automáticos para o contexto atual.")
 else:
-    _render_cards(auto_cards)
+    render_cards(cards)
 
 st.markdown("---")
 
-# ---------------------------------------------------------------------
-# Prompt livre
-# ---------------------------------------------------------------------
+# ------------------------------- prompt livre -------------------------
 st.subheader("💬 Pergunte à IA")
 user_prompt = st.text_area(
-    "Escreva sua pergunta ou foque em algo (ex.: 'explore bolas paradas', 'por que caímos no 2º tempo?', 'qual o impacto do 4-3-3?')",
-    placeholder="Digite sua pergunta em pt-BR…",
+    "Escreva sua pergunta (ex.: 'explore bolas paradas', 'por que caímos no 2º tempo?', 'impacto do 4-3-3?')",
     height=100,
+    placeholder="Digite sua pergunta em pt-BR…",
 )
+
 if st.button("Perguntar agora") and user_prompt.strip():
     ask_ctx = dict(context)
-    ask_ctx["user_focus"] = user_prompt.strip()
     ask_ctx["mode"] = "freeform"
+    ask_ctx["user_focus"] = user_prompt.strip()
     try:
         with st.spinner("Gerando resposta…"):
-            qa_cards = ai.generate_insights(ask_ctx, mode="freeform", max_cards=4)
-        if not qa_cards:
-            st.info("A IA não retornou resposta para esse prompt.")
+            qa = ai.generate_insights(ask_ctx, mode="freeform", max_cards=4)
+        if qa:
+            st.session_state["qa_cards"] = qa
         else:
-            st.session_state["qa_cards"] = qa_cards
+            st.info("A IA não retornou resposta para esse prompt.")
     except ai.AIError as e:
         st.error(f"Falha na IA: {e}")
 
 if "qa_cards" in st.session_state:
     st.markdown("### 📋 Resposta da IA")
-    _render_cards(st.session_state["qa_cards"])
+    render_cards(st.session_state["qa_cards"])
