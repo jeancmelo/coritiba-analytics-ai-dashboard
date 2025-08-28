@@ -1,4 +1,3 @@
-# pages/10_Insights_IA.py
 import json
 import streamlit as st
 from core import api_client, ui_utils, ai
