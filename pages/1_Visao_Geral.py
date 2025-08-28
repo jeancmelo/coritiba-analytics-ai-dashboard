@@ -55,7 +55,8 @@ def _fmt(v):
     return "-" if v is None else v
 
 # ----------------------- dados principais -----------------------
-stats = api_client.team_statistics(league["league_id"], season, team["team_id"]) or {}
+stats = api_client.team_statistics(LEAGUE_ID, season, TEAM_ID) or {}
+fixtures = api_client.fixtures(TEAM_ID, season) or []
 
 wins_total = _safe(stats, "fixtures", "wins", "total", default=None)
 draws_total = _safe(stats, "fixtures", "draws", "total", default=None)
