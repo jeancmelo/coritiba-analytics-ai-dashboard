@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from core import api_client, ui_utils
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 st.title("📈 Tendências & Alertas — Série B")
 
