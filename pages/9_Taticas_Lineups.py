@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from core import api_client, ui_utils
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 st.title("📐 Táticas & Lineups — Série B")
 
