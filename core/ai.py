@@ -1,27 +1,28 @@
 # core/ai.py
-import os, json, time
-from typing import Any, Dict, List, Optional, Tuple
+import os, re, json, math
+from typing import Any, Dict, List, Optional
 
 # OpenAI python >= 1.0
 try:
     from openai import OpenAI
-except Exception as e:  # pragma: no cover
+except Exception:
     OpenAI = None
 
 _DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 class AIError(Exception):
-    """Erro de alto nível para a camada de IA."""
+    pass
+
+# ------------------------------- utils -------------------------------
 
 def _make_client() -> OpenAI:
     if OpenAI is None:
-        raise AIError("Pacote openai >=1.0 não está instalado.")
+        raise AIError("Pacote openai>=1.0 não está instalado.")
     if not os.getenv("OPENAI_API_KEY"):
-        raise AIError("OPENAI_API_KEY não encontrada no ambiente.")
+        raise AIError("OPENAI_API_KEY não definida no ambiente.")
     return OpenAI()
 
-def _json_schema() -> dict:
-    # Schema simples de cartões de insight
+def _json_schema(strict: bool = False) -> dict:
     return {
         "name": "insights_payload",
         "schema": {
@@ -46,8 +47,8 @@ def _json_schema() -> dict:
                                     "type": "object",
                                     "properties": {
                                         "label": {"type": "string"},
-                                        "value": {"type": ["string", "number"]},
-                                        "baseline": {"type": ["string", "number", "null"]},
+                                        "value": {"type": ["string","number"]},
+                                        "baseline": {"type": ["string","number","null"]},
                                         "unit": {"type": "string"}
                                     },
                                     "required": ["label","value"]
@@ -60,117 +61,137 @@ def _json_schema() -> dict:
             },
             "required": ["insights"]
         },
-        "strict": True
+        "strict": strict
     }
 
 def _build_system_prompt(mode: str) -> str:
-    base = (
-        "Você é um analista tático/dados de futebol. "
-        "Entregue insights claros e acionáveis sobre o Coritiba, em português do Brasil. "
-        "Seja sucinto, sem jargões excessivos. Sempre explique por que importa e dê uma ação concreta."
-    )
+    base = ("Você é um analista de dados/tático do Coritiba. "
+            "Produza **cartões de insight** em pt-BR, concisos e acionáveis.")
     if mode == "pre_match":
-        base += " Foque em prévia do confronto (forças/fragilidades, bolas paradas, momentos de gol, riscos)."
+        base += " Foco em pré-jogo: forças, fragilidades, riscos e ações."
     elif mode == "freeform":
-        base += " Responda à pergunta do usuário usando o contexto e devolva como cartões de insight."
+        base += " Responda à pergunta do usuário como cartões."
     else:
-        base += " Gere de 3 a 6 cartões automáticos com base no contexto."
+        base += " Gere 3–6 cartões automáticos a partir do contexto."
+    base += " Sempre explique por que importa e recomende uma ação."
     return base
 
-def _truncate_context(context: Dict[str, Any]) -> Dict[str, Any]:
-    """Limita listas extensas para manter o payload enxuto e evitar erro por excesso."""
-    ctx = dict(context)
-    def tail(lst, n): 
-        return list(lst)[-n:] if isinstance(lst, list) else lst
-    ctx["last_games"] = tail(context.get("last_games", []), 10)
-    if "last_games_team" in ctx:
-        ctx["last_games_team"] = tail(ctx["last_games_team"], 10)
-    if "last_games_opp" in ctx:
-        ctx["last_games_opp"] = tail(ctx["last_games_opp"], 10)
-    if "head_to_head" in ctx:
-        ctx["head_to_head"] = tail(ctx["head_to_head"], 10)
-    return ctx
+def _tail(lst, n): 
+    return list(lst)[-n:] if isinstance(lst, list) else lst
 
-def _call_openai(client: OpenAI, model: str, system: str, ctx: Dict[str, Any]) -> dict:
-    """Chama Responses API pedindo JSON conforme schema."""
+def _truncate_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    c = dict(ctx)
+    for k in ["last_games","last_games_team","last_games_opp","head_to_head"]:
+        if k in c:
+            c[k] = _tail(c[k], 10)
+    # evita stats gigantes
+    if "stats" in c and isinstance(c["stats"], dict):
+        s = c["stats"].copy()
+        for big in ["fixtures","biggest","lineups","cards"]:
+            s.pop(big, None)
+        c["stats"] = s
+    if "team_stats" in c and isinstance(c["team_stats"], dict):
+        s = c["team_stats"].copy()
+        for big in ["lineups","cards"]:
+            s.pop(big, None)
+        c["team_stats"] = s
+    if "opp_stats" in c and isinstance(c["opp_stats"], dict):
+        s = c["opp_stats"].copy()
+        for big in ["lineups","cards"]:
+            s.pop(big, None)
+        c["opp_stats"] = s
+    return c
+
+def _extract_json(text: str) -> dict:
+    """Extrai primeiro objeto JSON plausível de um texto (mesmo vindo em ```json ...```)."""
+    if not text:
+        raise AIError("Resposta vazia do modelo.")
+    # remove cercas markdown
+    fenced = re.search(r"```json(.*?)```", text, re.S|re.I)
+    if fenced:
+        text = fenced.group(1)
+    # tenta achar primeiro bloco {...}
+    brace = re.search(r"\{.*\}", text, re.S)
+    if brace:
+        text = brace.group(0)
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        raise AIError(f"Falha ao parsear JSON: {e}\nTrecho: {text[:400]}")
+    if not isinstance(data, dict) or "insights" not in data:
+        raise AIError("JSON sem chave 'insights'.")
+    return data
+
+def _normalize_cards(cards: List[dict], max_cards: int) -> List[dict]:
+    out = []
+    for c in cards[:max_cards]:
+        out.append({
+            "type": c.get("type") or "insight",
+            "title": c.get("title") or "(sem título)",
+            "summary": c.get("summary") or "",
+            "why_it_matters": c.get("why_it_matters") or "",
+            "recommended_action": c.get("recommended_action") or "",
+            "timeframe": c.get("timeframe") or "",
+            "severity": c.get("severity") or "",
+            "confidence": c.get("confidence"),
+            "evidence": c.get("evidence") or [],
+        })
+    return out
+
+# ------------------------------ core call -----------------------------
+
+def _call_json_schema(client: OpenAI, model: str, system: str, ctx: dict) -> dict:
+    """Primeira tentativa: pedir JSON validado por schema (strict=False)."""
     resp = client.responses.create(
         model=model,
         messages=[
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": (
-                    "Gere cartões de insight no formato JSON (schema fornecido). "
-                    "Contexto a seguir em JSON:\n\n" + json.dumps(ctx, ensure_ascii=False)
-                ),
-            },
+            {"role":"system","content":system},
+            {"role":"user","content":"Use o **formato JSON abaixo** e responda apenas com JSON.\n\nContexto:\n"+json.dumps(ctx, ensure_ascii=False)}
         ],
-        response_format={"type": "json_schema", "json_schema": _json_schema()},
+        response_format={"type":"json_schema","json_schema":_json_schema(strict=False)},
         temperature=0.2,
     )
-    # Em openai>=1.0, você consegue o texto direto:
-    text = getattr(resp, "output_text", None)
+    text = getattr(resp, "output_text", "") or ""
     if not text:
-        # fallback: coleta pedaços caso o provedor retorne segmentado
+        # coleta pedacinhos, quando houver
         try:
-            parts = []
-            for item in getattr(resp, "output", []) or []:
-                for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", "") == "output_text":
-                        parts.append(getattr(c, "text", ""))
-            text = "".join(parts).strip()
+            parts=[]
+            for it in getattr(resp, "output", []) or []:
+                for c in getattr(it, "content", []) or []:
+                    if getattr(c, "type","") == "output_text":
+                        parts.append(getattr(c, "text",""))
+            text="".join(parts)
         except Exception:
-            text = ""
-    if not text:
-        raise AIError("Resposta vazia do modelo.")
-    try:
-        payload = json.loads(text)
-        if isinstance(payload, dict) and "insights" in payload:
-            return payload
-    except Exception as e:
-        raise AIError(f"Falha ao parsear JSON da IA: {e}\nTrecho: {text[:400]}")
-    raise AIError("Formato inválido recebido da IA.")
+            text=""
+    return _extract_json(text)
 
-def _fallback_heuristics(context: Dict[str, Any]) -> dict:
-    """Caso a IA falhe, gera alguns cartões básicos usando heurística."""
-    last = context.get("last_games") or []
-    gf = []
-    ga = []
-    for g in last:
-        # tenta parse de score "x-y" se existir:
-        sc = (g.get("score") or "").split("-")
-        if len(sc) == 2:
-            try:
-                gf.append(float(sc[0])); ga.append(float(sc[1]))
-            except Exception:
-                pass
-    insights = []
-    if gf:
-        media_gf = sum(gf)/len(gf)
-        txt = f"Coritiba marcou em média {media_gf:.2f} gols nos últimos {len(gf)} jogos."
-        insights.append({
-            "type": "trend",
-            "title": "Produção ofensiva recente",
-            "summary": txt,
-            "why_it_matters": "Ajuda a calibrar expectativa de gols na preparação do jogo.",
-            "recommended_action": "Explorar padrões que levaram aos gols (ex.: cruzamentos, transições).",
-            "severity": "low",
-            "confidence": 0.6,
-            "evidence": [{"label": "Gols por jogo (recente)", "value": round(media_gf,2)}],
-        })
-    if ga:
-        media_ga = sum(ga)/len(ga)
-        insights.append({
-            "type": "risk",
-            "title": "Gols sofridos recentes",
-            "summary": f"O time sofreu {media_ga:.2f} gols/jogo nas últimas partidas.",
-            "why_it_matters": "Indica ajustes defensivos necessários.",
-            "recommended_action": "Trabalhar compactação e bolas paradas defensivas.",
-            "severity": "medium" if media_ga>=1.5 else "low",
-            "confidence": 0.6,
-            "evidence": [{"label": "GA por jogo (recente)", "value": round(media_ga,2)}],
-        })
-    return {"insights": insights}
+def _call_json_plain(client: OpenAI, model: str, system: str, ctx: dict) -> dict:
+    """Fallback: pedir JSON 'puro' sem schema e parsear."""
+    prompt = (
+        "Responda **apenas** com JSON, seguindo este formato:\n"
+        '{"insights":[{"type":"trend","title":"...","summary":"...","why_it_matters":"...","recommended_action":"...",'
+        '"timeframe":"", "severity":"low|medium|high", "confidence":0.0, "evidence":[{"label":"...","value":0,"baseline":0,"unit":""}]}]}\n\n'
+        "Contexto:\n" + json.dumps(ctx, ensure_ascii=False)
+    )
+    resp = client.responses.create(
+        model=model,
+        messages=[{"role":"system","content":system},{"role":"user","content":prompt}],
+        temperature=0.2,
+    )
+    text = getattr(resp, "output_text", "") or ""
+    if not text:
+        try:
+            parts=[]
+            for it in getattr(resp, "output", []) or []:
+                for c in getattr(it, "content", []) or []:
+                    if getattr(c, "type","") == "output_text":
+                        parts.append(getattr(c, "text",""))
+            text="".join(parts)
+        except Exception:
+            text=""
+    return _extract_json(text)
+
+# ------------------------------- public ------------------------------
 
 def generate_insights(
     context: Dict[str, Any],
@@ -178,37 +199,22 @@ def generate_insights(
     max_cards: int = 6,
     model: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Gera cartões de insight. 
-    - mode: "auto" (default), "pre_match", "freeform"
-    - context: dicionário leve; esta função já poda listas longas
-    Retorna lista de dicts.
-    Levanta AIError em erros críticos; usa fallback em último caso.
-    """
     mode = mode or context.get("mode") or "auto"
     model = model or _DEFAULT_MODEL
     ctx = _truncate_context(context)
 
+    client = _make_client()
+    system = _build_system_prompt(mode)
+
+    # 1ª tentativa: schema
     try:
-        client = _make_client()
-        system = _build_system_prompt(mode)
-        payload = _call_openai(client, model, system, ctx)
-        insights = payload.get("insights") or []
-        # saneamento
-        clean = []
-        for c in insights[:max_cards]:
-            c["type"] = c.get("type") or mode
-            c["summary"] = c.get("summary") or c.get("title") or ""
-            c["evidence"] = c.get("evidence") or []
-            clean.append(c)
-        return clean
-    except Exception as e:
-        # último recurso: heurística
+        payload = _call_json_schema(client, model, system, ctx)
+        return _normalize_cards(payload.get("insights", []), max_cards)
+    except Exception as e1:
+        # 2ª tentativa: plain JSON
         try:
-            fb = _fallback_heuristics(ctx).get("insights", [])
-            if fb:
-                return fb
-        except Exception:
-            pass
-        # sem fallback: propaga com detalhe
-        raise AIError(str(e)) from e
+            payload = _call_json_plain(client, model, system, ctx)
+            return _normalize_cards(payload.get("insights", []), max_cards)
+        except Exception as e2:
+            # por fim, um fallback mínimo
+            raise AIError(f"Falha ao obter insights da IA. Schema: {e1} | Plain: {e2}")
