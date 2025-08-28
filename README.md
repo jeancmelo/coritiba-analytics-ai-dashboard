@@ -9,6 +9,11 @@
 
 O **Coritiba Analytics AI Dashboard** é um MVP desenvolvido em **Streamlit** que centraliza estatísticas, análises automáticas e insights de IA sobre o desempenho do **Coritiba Foot Ball Club** na Série B do Campeonato Brasileiro.
 
+👤 Autor
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Jean%20Melo-blue?logo=linkedin)](https://pt.linkedin.com/in/jeancmelo)
+
+ 
 O projeto combina:
 - 📊 Dados em tempo real da **API-Football**
 - 🧠 Insights automáticos via **IA (OpenAI)**
@@ -92,8 +97,4 @@ Esse MVP foi pensado como **projeto de portfólio**, mas também pode ser expand
 ### Adversário
 ![Adversário](docs/screenshots/adversario.png)
 
-👤 Autor
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Jean%20Melo-blue?logo=linkedin)](https://pt.linkedin.com/in/jeancmelo)
-
- 
