@@ -217,26 +217,37 @@ for c in cards:
 st.divider()
 
 # ---------------------------------------------------------------------
-# 3) Gráfico da métrica escolhida
+# 3) Gráfico da métrica escolhida (fix: evitar conflito do melt)
 # ---------------------------------------------------------------------
 st.subheader("📉 Séries temporais com janelas móveis")
+
 label2col = {m[1]: m[0] for m in METRICS}
 plot_metric = st.selectbox("Escolha uma métrica para visualizar", list(label2col.keys()), index=0)
 col = label2col[plot_metric]
 
+# seleciona e renomeia colunas para nomes únicos
 df_plot = df[["date", col, f"{col}_roll5", f"{col}_roll10"]].copy()
-if df_plot[col].notna().any() or df_plot[f"{col}_roll5"].notna().any() or df_plot[f"{col}_roll10"].notna().any():
-    df_plot = df_plot.rename(columns={
-        col: "Valor",
-        f"{col}_roll5": "Média (5j)",
-        f"{col}_roll10": "Média (10j)",
-    })
-    df_melt = df_plot.melt(id_vars="date", var_name="Série", value_name="Valor")
+df_plot = df_plot.rename(columns={
+    col: "Observado",
+    f"{col}_roll5": "Média (5j)",
+    f"{col}_roll10": "Média (10j)",
+})
+
+# usa só as séries que têm pelo menos 1 valor não-nulo
+value_vars = [c for c in ["Observado", "Média (5j)", "Média (10j)"] if df_plot[c].notna().any()]
+
+if not value_vars:
+    st.info("Não há dados suficientes dessa métrica para plotar.")
+else:
+    df_melt = df_plot.melt(
+        id_vars="date",
+        value_vars=value_vars,
+        var_name="Série",
+        value_name="Valor"  # agora não conflita com nenhuma coluna existente
+    )
     fig = px.line(df_melt, x="date", y="Valor", color="Série")
     fig.update_layout(xaxis_title="Data", yaxis_title=plot_metric)
     st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Não há dados suficientes dessa métrica para plotar.")
 
 # ---------------------------------------------------------------------
 # 4) Tabela-base (debug opcional)
