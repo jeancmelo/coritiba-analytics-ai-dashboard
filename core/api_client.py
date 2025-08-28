@@ -1,5 +1,8 @@
 # core/api_client.py
 from core.cache import get_json
+# core/api_client.py
+from .cache import http_session, _api_key
+import requests
 
 # ------------------- TEAMS --------------------
 def find_team(name: str):
@@ -57,3 +60,44 @@ def fixture_events(fixture_id: int):
 # ------------------- PLAYERS --------------------
 def players(team_id: int, season: int, page: int = 1):
     return get_json("/players", {"team": team_id, "season": season, "page": page}).get("response", [])
+
+BASE = "https://v3.football.api-sports.io"
+
+def _sess():
+    return http_session(_api_key())
+
+def api_get(path: str, params: dict):
+    """GET simples; devolve o JSON já carregado."""
+    r = _sess().get(f"{BASE}/{path.lstrip('/')}", params=params, timeout=40)
+    r.raise_for_status()
+    return r.json()
+
+def get_paginated(path: str, params: dict, max_pages: int = 50):
+    """
+    Busca todas as páginas de um endpoint paginado (players, fixtures, etc.).
+    Retorna lista com 'response' acumulado.
+    """
+    out = []
+    page = 1
+    while page <= max_pages:
+        payload = api_get(path, {**params, "page": page})
+        out.extend(payload.get("response", []))
+        paging = payload.get("paging", {}) or {}
+        cur = paging.get("current", page)
+        tot = paging.get("total", cur)
+        if not tot or cur >= tot:
+            break
+        page += 1
+    return out
+
+# Abstrações específicas que usamos nas páginas:
+def get_team_fixtures(team_id: int, season: int, league_id: int):
+    return get_paginated("fixtures", {"team": team_id, "season": season, "league": league_id})
+
+def get_team_statistics(team_id: int, season: int, league_id: int):
+    data = api_get("teams/statistics", {"team": team_id, "season": season, "league": league_id})
+    return data.get("response")
+
+def get_players_for_team(team_id: int, season: int):
+    """Busca todos jogadores da temporada (todas páginas)."""
+    return get_paginated("players", {"team": team_id, "season": season})
