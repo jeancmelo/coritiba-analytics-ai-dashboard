@@ -1,388 +1,376 @@
 import math
-from itertools import product
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from core import api_client, ui_utils
 
-from core import api_client, ui_utils, ai
+st.title("📊 Desempenho do Time — Série B")
 
-# ------------------------------------------------------------
-# Config
-# ------------------------------------------------------------
-CORITIBA_ID = 147    # fixo
-SERIE_B_ID = 72      # fixo
+# ---------------------------------------------------------------------
+# Filtros e cabeçalho
+# ---------------------------------------------------------------------
+season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
 
+team = api_client.find_team("Coritiba")
+league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-# ------------------------------------------------------------
+h1, h2, h3 = st.columns([1, 4, 1])
+with h1:
+    ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
+with h2:
+    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
+with h3:
+    ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
+
+st.caption("KPIs agregados da temporada na Série B, tendências e previsão probabilística do próximo jogo.")
+
+OUR_ID = team["team_id"]
+FINALS = {"FT", "AET", "PEN"}
+
+# ---------------------------------------------------------------------
 # Helpers
-# ------------------------------------------------------------
-def _is_final(fx) -> bool:
-    return (fx["fixture"].get("status", {}).get("short") or "") in {"FT", "AET", "PEN"}
+# ---------------------------------------------------------------------
+def safe_pct(s):
+    """Converte '55%' -> 55.0; números ficam como float; None vira None."""
+    if s is None:
+        return None
+    if isinstance(s, str) and "%" in s:
+        try:
+            return float(s.replace("%", "").strip())
+        except Exception:
+            return None
+    try:
+        return float(s)
+    except Exception:
+        try:
+            return int(s)
+        except Exception:
+            return None
 
-
-def _stat_value(items, keys):
-    """Busca valor numérico tentando várias chaves (normaliza %)."""
+def stat_value(items, keys):
+    """Busca valor numérico tentando várias chaves em 'statistics' do fixture."""
     for k in keys:
         for it in items:
             if (it.get("type") or "").lower() == k.lower():
-                v = it.get("value")
-                if v is None:
-                    return None
-                if isinstance(v, str) and "%" in v:
-                    try:
-                        return float(v.replace("%", "").strip())
-                    except Exception:
-                        return None
-                try:
-                    return float(v)
-                except Exception:
-                    try:
-                        return int(v)
-                    except Exception:
-                        return None
+                return safe_pct(it.get("value"))
     return None
 
-
-def poisson_pmf(lmbda, k):
-    """P(k; λ) = e^-λ * λ^k / k!"""
-    if lmbda is None or lmbda < 0:
-        return 0.0
+def fixture_blocks(fid):
     try:
-        return math.exp(-lmbda) * (lmbda ** k) / math.factorial(k)
+        return api_client.fixture_statistics(fid) or []
     except Exception:
-        return 0.0
+        return []
 
+def is_final(fx):
+    return (fx["fixture"].get("status", {}) or {}).get("short") in FINALS
 
-def score_matrix(lambda_for, lambda_against, max_g=4):
-    """Matriz de probabilidade de placar (0..max_g) x (0..max_g)."""
-    rows = []
-    for g_for in range(0, max_g + 1):
-        for g_against in range(0, max_g + 1):
-            p = poisson_pmf(lambda_for, g_for) * poisson_pmf(lambda_against, g_against)
-            rows.append({"GF": g_for, "GA": g_against, "Prob": p})
-    df = pd.DataFrame(rows)
-    # normaliza (caso truncado em max_g)
-    df["Prob"] = df["Prob"] / df["Prob"].sum()
-    return df.pivot(index="GF", columns="GA", values="Prob")
+def to_num(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
 
+def avg(v):
+    v = [to_num(x) for x in v if x is not None]
+    return round(float(np.mean(v)), 2) if v else None
 
-# ------------------------------------------------------------
-# UI — filtros
-# ------------------------------------------------------------
-st.title("📊 Desempenho do Time — Série B")
-
-season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
-janela_rolling = st.sidebar.slider("Janela de série móvel (jogos)", 3, 15, 7, 1)
-usar_resumo_ia = st.sidebar.toggle("Mostrar resumo IA", value=False)
-
-team = api_client.find_team("Coritiba")
-league = api_client.autodetect_league(CORITIBA_ID, season, "Brazil")
-
-# Header
-c1, c2, c3 = st.columns([1, 4, 1])
-with c1:
-    ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
-with c2:
-    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
-with c3:
-    ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
-
-st.caption("KPIs agregados da temporada na Série B, séries móveis, splits casa/fora e previsão de gols (Poisson) para o próximo jogo.")
-
-# ------------------------------------------------------------
-# Coleta dados API
-# ------------------------------------------------------------
-stats = api_client.team_statistics(league["league_id"], season, CORITIBA_ID)
-stats = stats[0] if isinstance(stats, list) and stats else stats
-
-fixtures_all = api_client.fixtures(CORITIBA_ID, season) or []
+# ---------------------------------------------------------------------
+# 1) Coleta fixture-by-fixture e métricas de cada jogo
+# ---------------------------------------------------------------------
+fixtures_all = api_client.fixtures(OUR_ID, season) or []
 for m in fixtures_all:
     m["_date"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
 fixtures_all = sorted(fixtures_all, key=lambda x: x.get("_date") or pd.Timestamp(0))
 
-fixtures_final = [f for f in fixtures_all if _is_final(f)]
+fixtures = [f for f in fixtures_all if is_final(f)]
 
-# ------------------------------------------------------------
-# KPIs básicos + fallback computado
-# ------------------------------------------------------------
-kpi_cols = st.columns(4)
-
-if stats:
-    try:
-        shots_avg = (stats["shots"]["for"]["total"] or 0) / max(stats["fixtures"]["played"]["total"] or 1, 1)
-    except Exception:
-        shots_avg = None
-    poss_avg = stats.get("lineups")  # às vezes posse não vem em team_statistics
-else:
-    shots_avg = None
-
-# Fallback manual a partir das partidas (média por jogo)
-shots_sum = []
-passes_acc = []
-clean_sheets = 0
-
-for fx in fixtures_final:
-    our_home = fx["teams"]["home"]["id"] == CORITIBA_ID
-    gh, ga = fx["goals"]["home"], fx["goals"]["away"]
-    if (gh == 0 and our_home) or (ga == 0 and not our_home):
-        clean_sheets += 1
-
-    try:
-        blocks = api_client.fixture_statistics(fx["fixture"]["id"])
-    except Exception:
-        blocks = []
-
-    mine = None
-    for b in (blocks or []):
-        tid = (b.get("team") or {}).get("id")
-        if tid == CORITIBA_ID:
-            mine = b
-            break
-    items = (mine or {}).get("statistics") or []
-    shots = _stat_value(items, ["Total Shots", "Shots Total", "Shots"])
-    poss = _stat_value(items, ["Ball Possession", "Possession"])
-    pass_acc = _stat_value(items, ["Passes %", "Pass Accuracy", "Passes accurate %"])
-
-    if shots is not None:
-        shots_sum.append(shots)
-    if pass_acc is not None:
-        passes_acc.append(pass_acc)
-
-shots_avg = round(np.mean(shots_sum), 2) if shots_sum else (shots_avg if shots_avg else 0)
-poss_avg = round(np.mean(passes_acc), 1) if passes_acc else None  # usando % de passes como proxy de posse, se não houver
-
-kpi_cols[0].metric("Média de Chutes/Jogo", shots_avg if shots_avg is not None else 0)
-kpi_cols[1].metric("Posse Média (%)", poss_avg if poss_avg is not None else "—")
-kpi_cols[2].metric("Passes certos %", round(np.mean(passes_acc), 1) if passes_acc else "—")
-kpi_cols[3].metric("Clean Sheets", clean_sheets)
-
-st.divider()
-
-# ------------------------------------------------------------
-# Gols por faixa de minuto (já conhecido)
-# ------------------------------------------------------------
-st.markdown("### ⏱️ Gols por faixa de minuto")
-
-gf_bins = []
-ga_bins = []
-for fx in fixtures_final:
-    fid = fx["fixture"]["id"]
-    try:
-        events = api_client.fixture_events(fid)
-    except Exception:
-        events = []
-
-    for ev in (events or []):
-        if ev.get("type") != "Goal":
-            continue
-        minute = (ev.get("time") or {}).get("elapsed") or 0
-        # bucket de 15 em 15
-        bucket = f"{(minute // 15) * 15:02d}-{((minute // 15) * 15 + 14):02d}"
-        tid = (ev.get("team") or {}).get("id")
-        if tid == CORITIBA_ID:
-            gf_bins.append(bucket)
-        else:
-            ga_bins.append(bucket)
-
-def _to_df(bins):
-    return pd.Series(bins).value_counts().sort_index().rename_axis("minuto").reset_index(name="total") if bins else pd.DataFrame({"minuto": [], "total": []})
-
-df_gf = _to_df(gf_bins)
-df_ga = _to_df(ga_bins)
-
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("⚽ Gols Pró por faixa de minuto")
-    if df_gf.empty:
-        st.info("Sem eventos de gol do Coritiba registrados.")
-    else:
-        st.plotly_chart(px.bar(df_gf, x="minuto", y="total"), use_container_width=True)
-with c2:
-    st.subheader("🧱 Gols Contra por faixa de minuto")
-    if df_ga.empty:
-        st.info("Sem eventos de gol contra registrados.")
-    else:
-        st.plotly_chart(px.bar(df_ga, x="minuto", y="total"), use_container_width=True)
-
-st.caption("Fonte: API-Football — eventos e estatísticas por partida.")
-
-st.divider()
-
-# ------------------------------------------------------------
-# Séries móveis: GF/GA, SOT, Corners
-# ------------------------------------------------------------
-st.markdown("### 📉 Séries móveis (últimos jogos)")
-
-rows_series = []
-for fx in fixtures_final:
+rows = []
+progress = st.progress(0)
+for i, fx in enumerate(fixtures, start=1):
+    progress.progress(i / max(1, len(fixtures)))
     f = fx["fixture"]
-    home = fx["teams"]["home"]; away = fx["teams"]["away"]
-    our_home = (home["id"] == CORITIBA_ID)
+    h, a = fx["teams"]["home"], fx["teams"]["away"]
+    our_home = (h["id"] == OUR_ID)
     gf = fx["goals"]["home"] if our_home else fx["goals"]["away"]
     ga = fx["goals"]["away"] if our_home else fx["goals"]["home"]
 
-    try:
-        blocks = api_client.fixture_statistics(f["id"])
-    except Exception:
-        blocks = []
+    blocks = fixture_blocks(f["id"])
     my_items, opp_items = [], []
     for b in (blocks or []):
         tid = (b.get("team") or {}).get("id")
-        if tid == CORITIBA_ID:
+        if tid == OUR_ID:
             my_items = b.get("statistics") or []
         else:
             opp_items = b.get("statistics") or []
 
-    sot = _stat_value(my_items, ["Shots on Goal", "Shots on Target", "SOT"])
-    corners_for = _stat_value(my_items, ["Corner Kicks", "Corners"])
-    corners_against = _stat_value(opp_items, ["Corner Kicks", "Corners"])
+    shots = stat_value(my_items, ["Total Shots", "Shots Total", "Shots"])
+    sot = stat_value(my_items, ["Shots on Goal", "Shots on Target", "SOT"])
+    poss = stat_value(my_items, ["Ball Possession", "Possession"])
+    pass_acc = stat_value(my_items, ["Passes %", "Passes accurate", "Accurate Passes"])  # pode variar
+    corners_for = stat_value(my_items, ["Corner Kicks", "Corners"])
+    corners_against = stat_value(opp_items, ["Corner Kicks", "Corners"])
 
-    rows_series.append({
+    rows.append({
         "date": pd.to_datetime(f["date"], errors="coerce"),
-        "GF": gf, "GA": ga, "SOT": sot,
-        "Corners_for": corners_for, "Corners_against": corners_against,
-        "H/A": "H" if our_home else "A"
+        "home": h["name"], "away": a["name"],
+        "H/A": "H" if our_home else "A",
+        "GF": gf, "GA": ga,
+        "Shots": shots, "SOT": sot, "Poss%": poss, "Pass%": pass_acc,
+        "Corners_for": corners_for, "Corners_against": corners_against
     })
 
-df_s = pd.DataFrame(rows_series).sort_values("date").reset_index(drop=True)
+progress.empty()
+df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
-def roll_mean(series, w):
-    s = pd.to_numeric(series, errors="coerce").rolling(w, min_periods=1).mean()
-    return s
+# ---------------------------------------------------------------------
+# 2) KPIs gerais + gols por minuto via /teams/statistics
+# ---------------------------------------------------------------------
+stats = api_client.team_statistics(league["league_id"], season, OUR_ID) or {}
+if isinstance(stats, list):
+    stats = stats[0] if stats else {}
 
-plots = [
-    ("GF", "Gols Pró"),
-    ("GA", "Gols Contra"),
-    ("SOT", "Chutes no alvo"),
-    ("Corners_for", "Escanteios a favor"),
-    ("Corners_against", "Escanteios contra")
-]
+# KPIs (preferimos estatísticas dos fixtures quando disponíveis)
+games_played = len(df)
+gf_pg = avg(df["GF"].tolist()) if games_played else None
+ga_pg = avg(df["GA"].tolist()) if games_played else None
+shots_pg = avg(df["Shots"].tolist()) if games_played else None
+sot_pg = avg(df["SOT"].tolist()) if games_played else None
+poss_avg = avg(df["Poss%"].tolist()) if games_played else None
+pass_pct = avg(df["Pass%"].tolist()) if games_played else None
+corn_for_pg = avg(df["Corners_for"].tolist()) if games_played else None
+corn_against_pg = avg(df["Corners_against"].tolist()) if games_played else None
 
-for key, label in plots:
-    if key not in df_s or df_s[key].dropna().empty:
-        continue
-    df_plot = df_s[["date", key]].copy()
-    df_plot["Média móvel"] = roll_mean(df_plot[key], janela_rolling)
-    df_plot = df_plot.rename(columns={key: "Valor"})
+# clean sheets a partir de fixtures
+clean_sheets = int((df["GA"] == 0).sum()) if not df.empty else 0
 
-    m = df_plot.melt(id_vars="date", var_name="Série", value_name="Valor")
-    fig = px.line(m, x="date", y="Valor", color="Série", title=label)
-    fig.update_layout(xaxis_title="Data", yaxis_title=label)
-    st.plotly_chart(fig, use_container_width=True)
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Chutes/jogo", shots_pg if shots_pg is not None else 0)
+k2.metric("SOT/jogo", sot_pg if sot_pg is not None else 0)
+k3.metric("Posse média (%)", poss_avg if poss_avg is not None else "-")
+k4.metric("Passes certos (%)", pass_pct if pass_pct is not None else "-")
 
-st.divider()
+k5, k6, k7, k8 = st.columns(4)
+k5.metric("Gols Pró/jogo", gf_pg if gf_pg is not None else 0)
+k6.metric("Gols Contra/jogo", ga_pg if ga_pg is not None else 0)
+k7.metric("Escanteios/jogo", corn_for_pg if corn_for_pg is not None else 0)
+k8.metric("Clean Sheets", clean_sheets)
 
-# ------------------------------------------------------------
-# Split Casa x Fora — PPG, GF/GA por jogo e resultados
-# ------------------------------------------------------------
-st.markdown("### 🏟️ Casa x Fora")
+st.markdown("---")
 
-if df_s.empty:
-    st.info("Sem partidas finalizadas para compor os splits.")
+# Gols por minuto (do endpoint de estatística do time, se vier)
+def minute_df(side_key: str):
+    try:
+        minute_map = (((stats.get("goals") or {}).get(side_key) or {}).get("minute")) or {}
+    except Exception:
+        minute_map = {}
+    rows = []
+    for rng, obj in (minute_map or {}).items():
+        total = (obj or {}).get("total")
+        if total is None:
+            continue
+        rows.append({"minuto": rng, "total": safe_pct(total)})
+    return pd.DataFrame(rows)
+
+df_m_for = minute_df("for")
+df_m_against = minute_df("against")
+
+c1, c2 = st.columns(2)
+with c1:
+    st.subheader("⚽ Gols Pró por faixa de minuto")
+    if not df_m_for.empty:
+        fig = px.bar(df_m_for, x="minuto", y="total")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Sem distribuição por minuto disponível.")
+with c2:
+    st.subheader("🧱 Gols Contra por faixa de minuto")
+    if not df_m_against.empty:
+        fig = px.bar(df_m_against, x="minuto", y="total")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Sem distribuição por minuto disponível.")
+
+st.caption("Fonte: API-Football — /teams/statistics e /fixtures(/statistics).")
+st.markdown("---")
+
+# ---------------------------------------------------------------------
+# 3) Tendências — Rolling médias móveis
+# ---------------------------------------------------------------------
+if df.empty:
+    st.info("Sem jogos finalizados nesta temporada.")
 else:
-    df_s["points"] = 0
-    for i, fx in enumerate(fixtures_final):
-        f = fx["fixture"]; home = fx["teams"]["home"]; away = fx["teams"]["away"]
-        our_home = (home["id"] == CORITIBA_ID)
-        gh, ga = fx["goals"]["home"], fx["goals"]["away"]
-        res_points = 3 if ((our_home and gh > ga) or ((not our_home) and ga > gh)) else (1 if gh == ga else 0)
-        df_s.loc[i, "points"] = res_points
+    st.subheader("📉 Tendências (médias móveis)")
+    win = st.slider("Janela (jogos)", 3, min(10, max(3, len(df))), min(5, len(df)))
 
-    grp = df_s.groupby("H/A").agg(
-        jogos=("H/A", "count"),
-        ppg=("points", "mean"),
-        gfpg=("GF", "mean"),
-        gapg=("GA", "mean")
-    ).reset_index()
+    for col, label in [("GF", "Gols Pró"), ("GA", "Gols Contra"), ("SOT", "Chutes no alvo")]:
+        series = pd.to_numeric(df[col], errors="coerce")
+        roll = series.rolling(win, min_periods=1).mean()
+        plot = pd.DataFrame({
+            "data": df["date"],
+            label: series,
+            f"{label} (média {win}j)": roll
+        })
+        melt = plot.melt(id_vars="data", var_name="Série", value_name="Valor")
+        fig = px.line(melt, x="data", y="Valor", color="Série")
+        fig.update_layout(xaxis_title="Data", yaxis_title=label)
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.dataframe(grp, use_container_width=True, hide_index=True)
-    st.plotly_chart(px.bar(grp, x="H/A", y=["ppg", "gfpg", "gapg"], barmode="group"), use_container_width=True)
+st.markdown("---")
 
-st.divider()
+# ---------------------------------------------------------------------
+# 4) Home x Away — Médias
+# ---------------------------------------------------------------------
+if not df.empty:
+    st.subheader("🏟️ Casa x Fora — Médias por jogo")
+    ha = df.groupby("H/A").agg({
+        "GF": "mean", "GA": "mean", "SOT": "mean", "Poss%": "mean"
+    }).reset_index().rename(columns={"H/A": "Local"})
+    for c in ["GF", "GA", "SOT", "Poss%"]:
+        ha[c] = ha[c].round(2)
 
-# ------------------------------------------------------------
-# Previsão de gols (Poisson) — próximo jogo
-# ------------------------------------------------------------
-st.markdown("### 🔮 Previsão de gols — próximo jogo (modelo Poisson simples)")
+    tabs = st.tabs(["GF/GA", "SOT", "Posse"])
+    with tabs[0]:
+        melt = ha.melt(id_vars="Local", value_vars=["GF", "GA"], var_name="Métrica", value_name="Valor")
+        st.plotly_chart(px.bar(melt, x="Local", y="Valor", color="Métrica", barmode="group"),
+                        use_container_width=True)
+    with tabs[1]:
+        st.plotly_chart(px.bar(ha, x="Local", y="SOT"), use_container_width=True)
+    with tabs[2]:
+        st.plotly_chart(px.bar(ha, x="Local", y="Poss%"), use_container_width=True)
 
-next_fx = api_client.fixtures(CORITIBA_ID, season, next=1)
+st.markdown("---")
+
+# ---------------------------------------------------------------------
+# 5) Conversão e Escanteios
+# ---------------------------------------------------------------------
+if not df.empty:
+    st.subheader("🎯 Conversão & Escanteios")
+    # Conversão (Gols / SOT)
+    conv = None
+    if df["SOT"].notna().any():
+        total_sot = pd.to_numeric(df["SOT"], errors="coerce").sum(skipna=True)
+        total_gf = pd.to_numeric(df["GF"], errors="coerce").sum(skipna=True)
+        conv = round((total_gf / total_sot) * 100, 1) if total_sot else None
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if conv is not None:
+            st.metric("Conversão (Gols/SOT)", f"{conv}%")
+        else:
+            st.info("Sem dados suficientes para conversão (SOT).")
+    with c2:
+        if df["Corners_for"].notna().any() or df["Corners_against"].notna().any():
+            corner_plot = pd.DataFrame({
+                "Tipo": ["A favor", "Contra"],
+                "Escanteios/jogo": [
+                    avg(df["Corners_for"].tolist()) or 0,
+                    avg(df["Corners_against"].tolist()) or 0
+                ]
+            })
+            st.plotly_chart(px.bar(corner_plot, x="Tipo", y="Escanteios/jogo"), use_container_width=True)
+        else:
+            st.info("Sem dados de escanteios.")
+
+st.markdown("---")
+
+# ---------------------------------------------------------------------
+# 6) Previsão do próximo jogo (Poisson)
+# ---------------------------------------------------------------------
+st.subheader("🔮 Previsão (Poisson) — Próximo jogo")
+
+next_fx = api_client.fixtures(OUR_ID, season, next=1)
 if not next_fx:
-    st.info("Nenhum próximo jogo encontrado.")
+    st.info("Nenhum próximo jogo encontrado na API.")
 else:
     fx = next_fx[0]
     home = fx["teams"]["home"]; away = fx["teams"]["away"]
-    is_home = home["id"] == CORITIBA_ID
+    is_home = (home["id"] == OUR_ID)
     opp = away if is_home else home
 
-    # λ estimados: médias recentes (últimos N finalizados)
-    N = max(6, janela_rolling)  # usa pelo menos 6 jogos
-    df_recent = df_s.tail(N)
+    colh, colt, colr = st.columns([2, 3, 2])
+    with colh:
+        ui_utils.load_image(opp["logo"], size=48, alt=opp["name"])
+    with colt:
+        st.markdown(f"**Próximo adversário:** {opp['name']}  •  **Local:** {'Casa' if is_home else 'Fora'}")
+        st.caption(pd.to_datetime(fx['fixture']['date']).strftime("%d/%m/%Y %H:%M"))
+    with colr:
+        ui_utils.load_image(team["team_logo"], size=0)  # só para equilibrar layout
 
-    lambda_for = df_recent["GF"].dropna().mean() if not df_recent.empty else None
-    lambda_against = df_recent["GA"].dropna().mean() if not df_recent.empty else None
+    # λ do Coxa (médias por jogo)
+    lam_for = gf_pg or 1.0
+    lam_against = ga_pg or 1.0
 
-    # Ajuste simples por fator casa/fora: +10% em casa, -10% fora
-    if lambda_for is not None:
-        lambda_for = float(lambda_for) * (1.10 if is_home else 0.90)
-    if lambda_against is not None:
-        lambda_against = float(lambda_against) * (0.90 if is_home else 1.10)
+    # λ do adversário pela API (se vier), senão fallback: nossos valores
+    opp_stats = api_client.team_statistics(league["league_id"], season, opp["id"]) or {}
+    if isinstance(opp_stats, list):
+        opp_stats = opp_stats[0] if opp_stats else {}
 
-    cl, cm, cr = st.columns([2, 3, 2])
-    with cl:
-        st.markdown(f"**Próximo adversário:** {opp['name']}")
-        st.caption(f"Local: {'Casa' if is_home else 'Fora'}")
-        st.caption(f"λ gols CFC: **{lambda_for:.2f}**  •  λ gols contra: **{lambda_against:.2f}**" if (lambda_for and lambda_against) else "Sem base suficiente para estimar λ.")
+    def read_avg_goals(block, side, place=None):
+        try:
+            g = (block.get("goals") or {}).get(side) or {}
+            avg_obj = (g.get("average") or {})
+            # tentamos total primeiro
+            val = avg_obj.get("total")
+            if val is None and place:
+                val = avg_obj.get(place)
+            return float(val) if val is not None else None
+        except Exception:
+            return None
 
-    if lambda_for and lambda_against:
-        mat = score_matrix(lambda_for, lambda_against, max_g=4)
-        heat = px.imshow(mat.values, x=mat.columns, y=mat.index, aspect="auto", origin="lower",
-                         labels=dict(x="Gols Sofridos", y="Gols Marcados", color="Prob"))
-        heat.update_layout(title="Probabilidade de placar (0–4)", xaxis_nticks=len(mat.columns), yaxis_nticks=len(mat.index))
-        with cm:
-            st.plotly_chart(heat, use_container_width=True)
+    opp_for = read_avg_goals(opp_stats, "for")
+    opp_against = read_avg_goals(opp_stats, "against")
 
-        # Placar mais provável e prob. de vitória/empate/derrota
-        flat = mat.stack().reset_index()
-        flat.columns = ["GF", "GA", "Prob"]
-        best = flat.loc[flat["Prob"].idxmax()]
-        pw = float(flat[flat["GF"] > flat["GA"]]["Prob"].sum())
-        pd = float(flat[flat["GF"] == flat["GA"]]["Prob"].sum())
-        pl = float(flat[flat["GF"] < flat["GA"]]["Prob"].sum())
+    # combinações simples (média dos λs "nossos-for" e "opponent-against")
+    lam_us = np.mean([x for x in [lam_for, opp_against] if x is not None]) if any([lam_for, opp_against]) else 1.0
+    lam_them = np.mean([x for x in [lam_against, opp_for] if x is not None]) if any([lam_against, opp_for]) else 1.0
 
-        with cr:
-            st.metric("Placar mais provável", f"{int(best['GF'])} x {int(best['GA'])}")
-            st.write(f"Vitória: **{pw:.0%}**")
-            st.write(f"Empate: **{pd:.0%}**")
-            st.write(f"Derrota: **{pl:.0%}**")
-    else:
-        st.info("Não foi possível calcular a matriz de probabilidades (falta de jogos recentes com gols).")
+    # Matriz de probabilidades de placar até 5x5
+    max_goals = 5
+    def pois_pmf(k, lam):  # P(X=k)
+        return math.exp(-lam) * (lam ** k) / math.factorial(k)
 
-st.divider()
+    grid = []
+    for i in range(max_goals + 1):
+        row = []
+        for j in range(max_goals + 1):
+            row.append(pois_pmf(i, lam_us) * pois_pmf(j, lam_them))
+        grid.append(row)
+    grid = np.array(grid)
+    # normaliza (numérica) — deve somar ~1
+    grid = grid / grid.sum()
 
-# ------------------------------------------------------------
-# Resumo IA (opcional)
-# ------------------------------------------------------------
-if usar_resumo_ia:
-    st.markdown("### 🤖 Resumo IA (experimental)")
-    ctx = {
-        "season": season,
-        "team": team,
-        "league": league,
-        "kpis": {
-            "shots_avg": shots_avg,
-            "possession_avg": poss_avg,
-            "clean_sheets": clean_sheets,
-        },
-        "recent_form": df_s.tail(6).to_dict(orient="records")
-    }
-    try:
-        with st.spinner("Gerando resumo…"):
-            cards = ai.generate_insights({"mode": "team_performance", **ctx}) or []
-        for ins in cards:
-            with st.container(border=True):
-                st.subheader(ins.get("title", "Resumo"))
-                st.write(ins.get("summary", ""))
-    except Exception:
-        st.info("Não foi possível gerar o resumo IA agora.")
+    # Probabilidades agregadas
+    p_win = float(grid[np.triu_indices_from(grid, 1)].sum()) if is_home else float(grid[np.tril_indices_from(grid, -1)].sum())
+    p_draw = float(np.trace(grid))
+    p_lose = 1.0 - p_win - p_draw
+
+    # over/under 2.5
+    p_over25 = float(sum(grid[i, j] for i in range(max_goals+1) for j in range(max_goals+1) if i + j >= 3))
+    p_btts = float(sum(grid[i, j] for i in range(1, max_goals+1) for j in range(1, max_goals+1)))
+
+    # Top-6 placares
+    out = []
+    for i in range(max_goals + 1):
+        for j in range(max_goals + 1):
+            out.append((i, j, grid[i, j]))
+    out = sorted(out, key=lambda x: x[2], reverse=True)[:6]
+
+    cols = st.columns(3)
+    cols[0].metric("Vitória", f"{round(p_win*100,1)}%")
+    cols[1].metric("Empate", f"{round(p_draw*100,1)}%")
+    cols[2].metric("Derrota", f"{round(p_lose*100,1)}%")
+
+    cols = st.columns(3)
+    cols[0].metric("Over 2.5 gols", f"{round(p_over25*100,1)}%")
+    cols[1].metric("BTTS (ambos marcam)", f"{round(p_btts*100,1)}%")
+    cols[2].metric("xG simples (λ nós)", round(lam_us, 2))
+
+    st.markdown("**Placares mais prováveis**")
+    df_scores = pd.DataFrame([{
+        "Placar": f"{i}–{j}",
+        "Prob%": round(p*100, 2)
+    } for i, j, p in out])
+    st.dataframe(df_scores, use_container_width=True, hide_index=True)
+
+st.caption("Modelagem Poisson simples (independência e médias recentes). Use como referência, não como predição determinística.")
