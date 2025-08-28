@@ -6,14 +6,15 @@ from core import api_client, ui_utils
 
 st.title("📈 Tendências & Alertas — Série B")
 
-# filtros globais
+# ---------------------------------------------------------------------
+# Filtros e cabeçalho
+# ---------------------------------------------------------------------
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
+last_n = st.sidebar.slider("Considerar últimos N jogos (finalizados)", 5, 38, 12, 1)
 
-# time e liga (fixos via api_client)
 team = api_client.find_team("Coritiba")
 league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-# header com logos
 h1, h2, h3 = st.columns([1, 4, 1])
 with h1:
     ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
@@ -22,127 +23,106 @@ with h2:
 with h3:
     ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
 
-st.caption("Detecção de tendências com janelas móveis (5 e 10 jogos) usando estatísticas por partida.")
+st.caption("Análise de tendências usando **somente partidas finalizadas**. As médias móveis ignoram buracos quando uma estatística não está disponível no jogo.")
 
-# -----------------------------------------------------------------------------
-# 1) Coleta de dados por partida
-# -----------------------------------------------------------------------------
-fixtures = api_client.fixtures(team["team_id"], season)
+# ---------------------------------------------------------------------
+# 1) Coleta — só jogos FINALIZADOS
+# ---------------------------------------------------------------------
+ALL_FINALS = {"FT", "AET", "PEN"}  # finalizados
+OUR_ID = team["team_id"]
+
+def _is_final(fx) -> bool:
+    return (fx["fixture"].get("status", {}).get("short") or "") in ALL_FINALS
+
+fixtures = api_client.fixtures(OUR_ID, season) or []
 if not fixtures:
-    st.info("Nenhuma partida encontrada para a temporada selecionada.")
+    st.info("Nenhuma partida retornada para esta temporada.")
     st.stop()
 
-# ordena por data
 for m in fixtures:
     m["_date"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
-fixtures = sorted(fixtures, key=lambda x: x.get("_date") or pd.Timestamp(0))
+# ordena asc para calcular séries no tempo; filtra finais; pega últimos N
+finals = [f for f in sorted(fixtures, key=lambda x: x.get("_date") or pd.Timestamp(0)) if _is_final(f)]
+finals = finals[-last_n:]
+
+if not finals:
+    st.info("Não há partidas finalizadas suficientes para a janela selecionada.")
+    st.stop()
 
 def _stat_value(items, keys):
-    """Procura o primeiro tipo válido em 'keys' dentro de items e normaliza para número."""
+    """Busca valor numérico tentando várias chaves; normaliza %."""
     for k in keys:
         for it in items:
-            if it.get("type", "").lower() == k.lower():
-                val = it.get("value")
-                if val is None:
+            if (it.get("type") or "").lower() == k.lower():
+                v = it.get("value")
+                if v is None:
                     return None
-                # normaliza percentuais "55%" -> 55.0
-                if isinstance(val, str) and "%" in val:
+                if isinstance(v, str) and "%" in v:
                     try:
-                        return float(val.replace("%", "").strip())
+                        return float(v.replace("%", "").strip())
                     except Exception:
                         return None
-                # às vezes vem "None" como string
                 try:
-                    return float(val)
+                    return float(v)
                 except Exception:
                     try:
-                        return int(val)
+                        return int(v)
                     except Exception:
                         return None
     return None
 
 rows = []
 progress = st.progress(0)
-total = len(fixtures)
-
-OUR_ID = team["team_id"]
-
-for i, fx in enumerate(fixtures, start=1):
-    progress.progress(i / total)
+for i, fx in enumerate(finals, start=1):
+    progress.progress(i / len(finals))
 
     f = fx["fixture"]
-    h = fx["teams"]["home"]
-    a = fx["teams"]["away"]
-    our_home = h["id"] == OUR_ID
-    opp = a if our_home else h
+    h, a = fx["teams"]["home"], fx["teams"]["away"]
+    our_home = (h["id"] == OUR_ID)
 
-    goals_for = fx["goals"]["home"] if our_home else fx["goals"]["away"]
-    goals_against = fx["goals"]["away"] if our_home else fx["goals"]["home"]
+    gf = fx["goals"]["home"] if our_home else fx["goals"]["away"]
+    ga = fx["goals"]["away"] if our_home else fx["goals"]["home"]
 
-    # coleta estatísticas do fixture
+    # estatísticas do jogo (podem faltar em alguns jogos)
     try:
         blocks = api_client.fixture_statistics(f["id"])
     except Exception:
         blocks = []
 
-    # separa nosso bloco vs adversário
-    my_block = None
-    opp_block = None
-    for b in blocks or []:
+    my_items, opp_items = [], []
+    for b in (blocks or []):
         tid = (b.get("team") or {}).get("id")
         if tid == OUR_ID:
-            my_block = b
+            my_items = b.get("statistics") or []
         else:
-            opp_block = b
+            opp_items = b.get("statistics") or []
 
-    my_items = (my_block or {}).get("statistics") or []
-    opp_items = (opp_block or {}).get("statistics") or []
-
-    # chaves comuns da API-Football
     shots_total = _stat_value(my_items, ["Total Shots", "Shots Total", "Shots"])
     shots_on = _stat_value(my_items, ["Shots on Goal", "Shots on Target", "SOT"])
     poss = _stat_value(my_items, ["Ball Possession", "Possession"])
     corners_for = _stat_value(my_items, ["Corner Kicks", "Corners"])
+    corners_against = _stat_value(opp_items, ["Corner Kicks", "Corners"])
     fouls_for = _stat_value(my_items, ["Fouls"])
+    fouls_against = _stat_value(opp_items, ["Fouls"])
     yc_for = _stat_value(my_items, ["Yellow Cards"])
     rc_for = _stat_value(my_items, ["Red Cards"])
-
-    # defensivo (contra)
-    corners_against = _stat_value(opp_items, ["Corner Kicks", "Corners"])
-    fouls_against = _stat_value(opp_items, ["Fouls"])
-    yc_against = _stat_value(opp_items, ["Yellow Cards"])
-    rc_against = _stat_value(opp_items, ["Red Cards"])
 
     rows.append({
         "date": pd.to_datetime(f["date"], errors="coerce"),
         "fixture_id": f["id"],
-        "opponent": opp["name"],
-        "H/A": "H" if our_home else "A",
-        "GF": goals_for,
-        "GA": goals_against,
-        "SOT": shots_on,
-        "Shots": shots_total,
-        "Poss%": poss,
-        "Corners_for": corners_for,
-        "Corners_against": corners_against,
-        "Fouls_for": fouls_for,
-        "Fouls_against": fouls_against,
-        "YC_for": yc_for,
-        "RC_for": rc_for,
-        "YC_against": yc_against,
-        "RC_against": rc_against,
+        "GF": gf, "GA": ga,
+        "SOT": shots_on, "Shots": shots_total, "Poss%": poss,
+        "Corners_for": corners_for, "Corners_against": corners_against,
+        "Fouls_for": fouls_for, "Fouls_against": fouls_against,
+        "YC_for": yc_for, "RC_for": rc_for,
     })
 
 progress.empty()
 df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
-if df.empty:
-    st.info("Sem estatísticas suficientes nas partidas para calcular tendências.")
-    st.stop()
-
-# -----------------------------------------------------------------------------
-# 2) Cálculos de tendência (rolling 5 e 10)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# 2) Tendências com janelas móveis (5 e 10) — ignorando buracos
+# ---------------------------------------------------------------------
 WINDOWS = [5, 10]
 METRICS = [
     ("GF", "Gols Pró (média)"),
@@ -156,108 +136,112 @@ METRICS = [
     ("RC_for", "Vermelhos (CFC) (média)"),
 ]
 
-for col, _ in METRICS:
-    df[f"{col}_roll5"] = df[col].rolling(WINDOWS[0], min_periods=1).mean()
-    df[f"{col}_roll10"] = df[col].rolling(WINDOWS[1], min_periods=1).mean()
+def rolling_current(series: pd.Series, window: int):
+    """Média dos últimos 'window' valores válidos (ignora NaN)."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return None
+    return float(s.tail(min(window, len(s))).mean())
 
-season_means = {m[0]: df[m[0]].mean(skipna=True) for m in METRICS}
+def rolling_series(series: pd.Series, window: int):
+    """Série de médias móveis usando somente valores válidos até cada ponto."""
+    out = []
+    history = []
+    for v in series:
+        history.append(v)
+        h = pd.Series(pd.to_numeric(history, errors="coerce")).dropna()
+        out.append(float(h.tail(min(window, len(h))).mean()) if not h.empty else np.nan)
+    return out
+
+season_means = {}
+for key, _ in METRICS:
+    season_means[key] = pd.to_numeric(df[key], errors="coerce").dropna().mean()
+
+for key, _ in METRICS:
+    df[f"{key}_roll5"] = rolling_series(df[key], 5)
+    df[f"{key}_roll10"] = rolling_series(df[key], 10)
 
 def classify_delta(delta_pct: float) -> str:
-    """Define severidade por % de variação."""
     if delta_pct is None or np.isnan(delta_pct):
         return "low"
     absd = abs(delta_pct)
-    if absd >= 30:
-        return "high"
-    if absd >= 15:
-        return "medium"
+    if absd >= 30: return "high"
+    if absd >= 15: return "medium"
     return "low"
 
 def arrow(delta: float) -> str:
-    if delta is None or np.isnan(delta):
-        return "↔"
+    if delta is None or np.isnan(delta): return "↔"
     return "▲" if delta > 0 else ("▼" if delta < 0 else "↔")
 
 def conf(n_games: int, window: int) -> float:
-    """Confiança ~ cobertura da janela."""
-    n = max(min(n_games, window), 0)
-    return round(n / window, 2)
+    return round(min(n_games, window) / window, 2)
 
 st.divider()
 st.subheader("🔔 Tendências detectadas (janelas 5 e 10 jogos)")
 
-# último ponto (mais recente)
-last_idx = len(df) - 1
-n_games = last_idx + 1
-
+n_games = len(df)
 cards = []
 for col, label in METRICS:
-    current5 = df.loc[last_idx, f"{col}_roll5"]
-    current10 = df.loc[last_idx, f"{col}_roll10"]
+    current5 = rolling_current(df[col], 5)
+    current10 = rolling_current(df[col], 10)
     base = season_means.get(col, np.nan)
 
-    # deltas percentuais vs média da temporada
-    d5 = ((current5 - base) / base * 100.0) if pd.notna(base) and base != 0 else np.nan
-    d10 = ((current10 - base) / base * 100.0) if pd.notna(base) and base != 0 else np.nan
-
-    sev5 = classify_delta(d5)
-    sev10 = classify_delta(d10)
+    d5 = ((current5 - base) / base * 100.0) if (pd.notna(base) and base != 0 and current5 is not None) else None
+    d10 = ((current10 - base) / base * 100.0) if (pd.notna(base) and base != 0 and current10 is not None) else None
 
     cards.append({
-        "metric": label,
-        "window": 5,
-        "value": round(current5, 2) if pd.notna(current5) else None,
-        "delta_pct": round(d5, 1) if pd.notna(d5) else None,
-        "severity": sev5,
+        "metric": label, "window": 5,
+        "value": None if current5 is None else round(current5, 2),
+        "delta_pct": None if d5 is None else round(d5, 1),
+        "severity": classify_delta(d5),
         "confidence": conf(n_games, 5),
         "arrow": arrow(d5),
     })
     cards.append({
-        "metric": label,
-        "window": 10,
-        "value": round(current10, 2) if pd.notna(current10) else None,
-        "delta_pct": round(d10, 1) if pd.notna(d10) else None,
-        "severity": sev10,
+        "metric": label, "window": 10,
+        "value": None if current10 is None else round(current10, 2),
+        "delta_pct": None if d10 is None else round(d10, 1),
+        "severity": classify_delta(d10),
         "confidence": conf(n_games, 10),
         "arrow": arrow(d10),
     })
 
-# Render cards
 for c in cards:
     with st.container(border=True):
-        st.markdown(f"**{c['metric']}** — janela **{c['window']}** jogos")
         vtxt = "—" if c["value"] is None else str(c["value"])
         dtxt = "—" if c["delta_pct"] is None else f"{c['delta_pct']}%"
-        sev = c["severity"]
-        sev_emoji = "🟥" if sev == "high" else ("🟨" if sev == "medium" else "🟩")
-        st.write(f"Valor atual: **{vtxt}**  •  Δ vs média: **{c['arrow']} {dtxt}**  •  Severidade: {sev_emoji} **{sev}**  •  Confiança: **{c['confidence']}**")
+        sev_emoji = {"high": "🟥", "medium": "🟨", "low": "🟩"}[c["severity"]]
+        st.markdown(f"**{c['metric']}** — janela **{c['window']}** jogos")
+        st.write(f"Valor atual: **{vtxt}**  •  Δ vs média: **{c['arrow']} {dtxt}**  •  Severidade: {sev_emoji} **{c['severity']}**  •  Confiança: **{c['confidence']}**")
 
 st.divider()
 
-# -----------------------------------------------------------------------------
-# 3) Gráficos de tendência (rolling)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# 3) Gráfico da métrica escolhida
+# ---------------------------------------------------------------------
 st.subheader("📉 Séries temporais com janelas móveis")
-
-plot_metric = st.selectbox(
-    "Escolha uma métrica para visualizar",
-    options=[m[1] for m in METRICS],
-    index=0
-)
-# map label -> col
 label2col = {m[1]: m[0] for m in METRICS}
+plot_metric = st.selectbox("Escolha uma métrica para visualizar", list(label2col.keys()), index=0)
 col = label2col[plot_metric]
 
 df_plot = df[["date", col, f"{col}_roll5", f"{col}_roll10"]].copy()
-df_plot = df_plot.rename(columns={
-    col: "Valor",
-    f"{col}_roll5": "Média (5j)",
-    f"{col}_roll10": "Média (10j)"
-})
+if df_plot[col].notna().any() or df_plot[f"{col}_roll5"].notna().any() or df_plot[f"{col}_roll10"].notna().any():
+    df_plot = df_plot.rename(columns={
+        col: "Valor",
+        f"{col}_roll5": "Média (5j)",
+        f"{col}_roll10": "Média (10j)",
+    })
+    df_melt = df_plot.melt(id_vars="date", var_name="Série", value_name="Valor")
+    fig = px.line(df_melt, x="date", y="Valor", color="Série")
+    fig.update_layout(xaxis_title="Data", yaxis_title=plot_metric)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Não há dados suficientes dessa métrica para plotar.")
 
-df_melt = df_plot.melt(id_vars="date", var_name="Série", value_name="Valor")
-fig = px.line(df_melt, x="date", y="Valor", color="Série")
-fig.update_layout(xaxis_title="Data", yaxis_title=plot_metric)
-st.plotly_chart(fig, use_container_width=True)
+# ---------------------------------------------------------------------
+# 4) Tabela-base (debug opcional)
+# ---------------------------------------------------------------------
+with st.expander("Ver tabela base (debug)"):
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-st.caption("Notas: Severidade baseada na variação percentual vs média da temporada. Confiança reflete quantos jogos preencheram a janela (0–1). Jogos sem estatísticas completas são ignorados ou contam parcial.")
+st.caption("Notas: Só jogos finalizados entram no cálculo. Quando uma estatística não existe para um jogo, a janela usa os valores válidos mais recentes (ignorando buracos).")
