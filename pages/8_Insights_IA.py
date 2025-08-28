@@ -3,6 +3,8 @@ import json
 import pandas as pd
 import streamlit as st
 from core import api_client, ui_utils, ai
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 st.title("🧠 Insights com IA — Hub")
 
