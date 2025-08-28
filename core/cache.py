@@ -23,10 +23,27 @@ def http_session(api_key: str):
     return s
 
 def _api_key():
+    """
+    Busca a API key do API-Football em:
+    1) st.secrets["API_FOOTBALL_KEY"] (Streamlit Cloud / secrets.toml)
+    2) st.secrets["API_FOOTBALL"] (fallback)
+    3) variáveis de ambiente (deploys alternativos)
+    """
+    # 1) Streamlit Secrets (preferencial)
+    try:
+        if "API_FOOTBALL_KEY" in st.secrets:
+            return st.secrets["API_FOOTBALL_KEY"]
+        if "API_FOOTBALL" in st.secrets:
+            return st.secrets["API_FOOTBALL"]
+    except Exception:
+        pass
+
+    # 2) Ambiente
     key = os.environ.get("API_FOOTBALL_KEY") or os.environ.get("API_FOOTBALL")
-    if not key:
-        raise RuntimeError("API_FOOTBALL_KEY não configurado nos Secrets.")
-    return key
+    if key:
+        return key
+
+    raise RuntimeError("API_FOOTBALL_KEY não configurado nos Secrets/Env.")
 
 # -------------------- “forçar refresh” por sessão --------------------
 def _refresh_nonce():
