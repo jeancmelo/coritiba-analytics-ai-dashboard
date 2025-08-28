@@ -23,11 +23,51 @@ def http_session(api_key: str):
     return s
 
 def _api_key():
-    key = os.environ.get("API_FOOTBALL_KEY") or os.environ.get("API_FOOTBALL")
-    if not key:
-        raise RuntimeError("API_FOOTBALL_KEY não configurado nos Secrets.")
-    return key
+    """
+    Procura a chave da API-Sports (API-Football) em:
+    1) st.secrets["APISPORTS_KEY"]
+    2) Outros nomes comuns em st.secrets
+    3) Variáveis de ambiente
+    """
+    # 1) Nome principal que você está usando
+    try:
+        if "APISPORTS_KEY" in st.secrets and st.secrets["APISPORTS_KEY"]:
+            return st.secrets["APISPORTS_KEY"]
+    except Exception:
+        pass
 
+    # 2) Alternativos (caso mude no futuro)
+    try:
+        for k in ("API_FOOTBALL_KEY", "API_FOOTBALL", "FOOTBALL_API_KEY", "APIFOOTBALL_KEY"):
+            if k in st.secrets and st.secrets[k]:
+                return st.secrets[k]
+    except Exception:
+        pass
+
+    # 3) Variáveis de ambiente
+    key = (
+        os.environ.get("APISPORTS_KEY")
+        or os.environ.get("API_FOOTBALL_KEY")
+        or os.environ.get("API_FOOTBALL")
+        or os.environ.get("FOOTBALL_API_KEY")
+        or os.environ.get("APIFOOTBALL_KEY")
+    )
+    if key:
+        return key
+
+    # 4) Mensagem de ajuda
+    existing = []
+    try:
+        existing = list(getattr(st, "secrets", {}).keys())
+    except Exception:
+        pass
+    raise RuntimeError(
+        "APISPORTS_KEY não configurado nos Secrets/Env.\n"
+        "• No Streamlit Cloud, vá em: Manage app → Settings → Secrets e salve:\n"
+        '  APISPORTS_KEY = "SUA_CHAVE_AQUI"\n'
+        "• Depois, reinicie o app (⋮ → Restart).\n"
+        f"Chaves encontradas em st.secrets: {existing}"
+    )
 # -------------------- “forçar refresh” por sessão --------------------
 def _refresh_nonce():
     return st.session_state.get("refresh_key", 0)
