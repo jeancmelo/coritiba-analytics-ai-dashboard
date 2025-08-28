@@ -4,6 +4,8 @@ import statistics
 import streamlit as st
 import pandas as pd
 from core import api_client
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 PAGE_TITLE = "📊 Visão Geral"
 st.title(PAGE_TITLE)
