@@ -1,119 +1,116 @@
+# pages/4_Elenco_Jogadores.py
 import streamlit as st
 import pandas as pd
 from core import api_client, ui_utils
 from core.cache import render_cache_controls
-render_cache_controls()  # mostra: última atualização + botões
 
+render_cache_controls()  # mostra: última atualização + botões
 st.title("🧑‍🤝‍🧑 Elenco & Jogadores — Profissional (Série B)")
+
+# IDs fixos do projeto
+CORITIBA_ID = 147
+SERIE_B_ID  = 72
 
 # filtros globais
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
-team = api_client.find_team("Coritiba")
-league = api_client.autodetect_league(team["team_id"], season, "Brazil")
 
-# header com logos
+# header com logos via ID (determinístico)
+team   = api_client.team_by_id(CORITIBA_ID)
+league = api_client.league_by_id(SERIE_B_ID)
+
 h1, h2, h3 = st.columns([1, 4, 1])
 with h1:
-    ui_utils.load_image(team["team_logo"], size=56, alt="Logo do Coritiba")
+    ui_utils.load_image(team.get("team_logo"), size=56, alt="Logo do Coritiba")
 with h2:
-    st.subheader(f"{team['team_name']} — {season} • {league['league_name']} (Profissional)")
+    st.subheader(f"{team.get('team_name','Coritiba')} — {season} • {league.get('league_name','Série B')} (Profissional)")
 with h3:
-    ui_utils.load_image(league["league_logo"], size=56, alt="Logo da Liga")
+    ui_utils.load_image(league.get("league_logo"), size=56, alt="Logo da Liga")
 
 st.caption("Mostrando apenas atletas com **minutos > 0** na **Série B (72)** pelo **Coritiba (147)** nesta temporada.")
 
-CORITIBA_ID = 147
-SERIE_B_ID = 72
-
 def pick_professional_stats(stats_list):
     """
-    Escolhe do vetor statistics[] somente a entrada:
+    Do vetor statistics[] escolhe somente a entrada:
     - da Série B (league.id = 72)
     - do Coritiba (team.id = 147)
     - com minutos > 0 (atuou)
-    Retorna o dicionário stats válido ou None.
     """
     if not stats_list:
         return None
     for s in stats_list:
         league_ok = (s.get("league", {}) or {}).get("id") == SERIE_B_ID
-        team_ok = (s.get("team", {}) or {}).get("id") == CORITIBA_ID
-        games = s.get("games", {}) or {}
-        minutes = games.get("minutes") or 0
+        team_ok   = (s.get("team",   {}) or {}).get("id") == CORITIBA_ID
+        games     =  s.get("games",  {}) or {}
+        minutes   =  games.get("minutes") or 0
         if league_ok and team_ok and minutes and minutes > 0:
             return s
     return None
 
 # ---------------------------
-# Coleta todas as páginas
+# Coleta todas as páginas do /players
 # ---------------------------
+rows, page, max_pages = [], 1, 30
 with st.spinner("Carregando jogadores…"):
-    page = 1
-    rows = []
-    max_pages = 20  # segurança
-    fetched = 0
     while page <= max_pages:
-        chunk = api_client.api_get("players", {"team": team["team_id"], "season": season, "page": page}) or []
+        chunk = api_client.players_page(CORITIBA_ID, season, page) or []
         if not chunk:
             break
-        fetched += len(chunk)
         for item in chunk:
             player = item.get("player", {}) or {}
             s = pick_professional_stats(item.get("statistics") or [])
             if not s:
                 continue  # ignora quem não atuou na Série B pelo Coritiba
 
-            games = s.get("games", {}) or {}
-            goals = s.get("goals", {}) or {}
-            shots = s.get("shots", {}) or {}
+            games  = s.get("games",  {}) or {}
+            goals  = s.get("goals",  {}) or {}
+            shots  = s.get("shots",  {}) or {}
             passes = s.get("passes", {}) or {}
-            duels = s.get("duels", {}) or {}
-            cards = s.get("cards", {}) or {}
+            duels  = s.get("duels",  {}) or {}
+            cards  = s.get("cards",  {}) or {}
 
-            minutes = games.get("minutes") or 0
-            played = games.get("appearences") or 0
+            minutes  = games.get("minutes") or 0
+            played   = games.get("appearences") or 0
             position = games.get("position") or "-"
-            rating = games.get("rating")
+            rating   = games.get("rating")
             try:
                 rating = float(rating) if rating else None
             except Exception:
                 rating = None
 
-            g_total = goals.get("total") or 0
-            a_total = goals.get("assists") or 0
-            sot = shots.get("on") or 0
-            shots_total = shots.get("total") or 0
-            key_passes = passes.get("key") or 0
-            duels_won = duels.get("won") or 0
-            duels_total = duels.get("total") or 0
-            yc = cards.get("yellow") or 0
-            rc = cards.get("red") or 0
+            g_total     = goals.get("total")   or 0
+            a_total     = goals.get("assists") or 0
+            sot         = shots.get("on")      or 0
+            shots_total = shots.get("total")   or 0
+            key_passes  = passes.get("key")    or 0
+            duels_won   = duels.get("won")     or 0
+            duels_total = duels.get("total")   or 0
+            yc          = cards.get("yellow")  or 0
+            rc          = cards.get("red")     or 0
 
             per90 = (minutes / 90) if minutes else 0
             rows.append({
-                "foto": player.get("photo"),
-                "nome": player.get("name"),
-                "idade": player.get("age"),
-                "pos": position,
-                "min": minutes,
-                "jogos": played,
-                "gols": g_total,
+                "foto":   player.get("photo"),
+                "nome":   player.get("name"),
+                "idade":  player.get("age"),
+                "pos":    position,
+                "min":    minutes,
+                "jogos":  played,
+                "gols":   g_total,
                 "assist": a_total,
-                "g90": round(g_total / per90, 2) if per90 else 0,
-                "a90": round(a_total / per90, 2) if per90 else 0,
-                "sot": sot,
-                "sot90": round(sot / per90, 2) if per90 else 0,
-                "keyP": key_passes,
-                "kp90": round(key_passes / per90, 2) if per90 else 0,
+                "g90":    round(g_total   / per90, 2) if per90 else 0,
+                "a90":    round(a_total   / per90, 2) if per90 else 0,
+                "sot":    sot,
+                "sot90":  round(sot       / per90, 2) if per90 else 0,
+                "keyP":   key_passes,
+                "kp90":   round(key_passes/ per90, 2) if per90 else 0,
                 "duels%": round((duels_won / duels_total * 100), 1) if duels_total else None,
-                "YC": yc,
-                "RC": rc,
+                "YC":     yc,
+                "RC":     rc,
                 "rating": rating,
             })
         page += 1
 
 df = pd.DataFrame(rows)
-
 if df.empty:
     st.info("Nenhum atleta com minutos na Série B para essa temporada.")
     st.stop()
@@ -121,11 +118,7 @@ if df.empty:
 # filtros de UI
 posicoes = ["Todos"] + sorted([p for p in df["pos"].dropna().unique() if p])
 pos_sel = st.selectbox("Filtrar por posição", posicoes, index=0)
-
-if pos_sel != "Todos":
-    df_view = df[df["pos"] == pos_sel].copy()
-else:
-    df_view = df.copy()
+df_view = df[df["pos"] == pos_sel].copy() if pos_sel != "Todos" else df.copy()
 
 ordens = {
     "Minutos": "min",
@@ -139,7 +132,6 @@ ordens = {
 }
 ordem_sel = st.selectbox("Ordenar por", list(ordens.keys()), index=0)
 asc = st.toggle("Ordem crescente?", value=False)
-
 df_view = df_view.sort_values(ordens[ordem_sel], ascending=asc, na_position="last")
 
 st.divider()
@@ -165,8 +157,8 @@ for _, r in df_view.iterrows():
         m3.metric("Assist.", int(r["assist"]))
 
         m4, m5, m6 = st.columns(3)
-        m4.metric("G/90", r["g90"])
-        m5.metric("A/90", r["a90"])
+        m4.metric("G/90",  r["g90"])
+        m5.metric("A/90",  r["a90"])
         m6.metric("SOT/90", r["sot90"])
 
         m7, m8, m9 = st.columns(3)
