@@ -2,6 +2,10 @@
 import streamlit as st
 from core import api_client
 
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
+
+
 st.set_page_config(
     page_title="Coritiba Analytics AI — Dashboard",
     page_icon="⚽",
