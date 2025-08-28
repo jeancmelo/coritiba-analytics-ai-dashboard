@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 from core import api_client, ui_utils
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 st.title("🧑‍🤝‍🧑 Elenco & Jogadores — Profissional (Série B)")
 
