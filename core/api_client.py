@@ -26,6 +26,11 @@ def league_by_id(league_id: int):
             "league_logo": lg.get("logo"),
         }
     return {"league_id": league_id, "league_name": f"Liga {league_id}", "league_logo": None}
+
+def players_page(team_id: int, season: int, page: int = 1):
+    """Uma página do endpoint /players (team+season). Retorna response[]."""
+    data = get_json("/players", {"team": team_id, "season": season, "page": page})
+    return data.get("response", [])
     
 # ------------------- TEAMS --------------------
 def find_team(name: str):
