@@ -13,7 +13,8 @@ O **Coritiba Analytics AI Dashboard** é um MVP desenvolvido em **Streamlit** qu
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Jean%20Melo-blue?logo=linkedin)](https://pt.linkedin.com/in/jeancmelo)
 
- 
+## 📖 DEMO: https://coritiba-analytics-ai-dashboard-bfmws6oipkmbtxrdzfuhdu.streamlit.app/
+
 O projeto combina:
 - 📊 Dados em tempo real da **API-Football**
 - 🧠 Insights automáticos via **IA (OpenAI)**
