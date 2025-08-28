@@ -1,4 +1,6 @@
+# pages/10_Insights_IA.py
 import json
+import pandas as pd
 import streamlit as st
 from core import api_client, ui_utils, ai
 
@@ -22,12 +24,12 @@ with h3:
 st.caption("Central de inteligência: insights automáticos e respostas orientadas por prompt, usando dados da Série B.")
 
 # ---------------------------------------------------------------------
-# Coleta de contexto (ENXUTO)
+# Coleta de contexto (enxuto e robusto)
 # ---------------------------------------------------------------------
 with st.expander("📦 Coletando dados de contexto", expanded=False):
     st.caption("O contexto inclui estatísticas agregadas da temporada, últimos jogos, standings e próximo adversário.")
 
-# stats
+# team statistics
 stats = api_client.team_statistics(league["league_id"], season, team["team_id"])
 stats = stats[0] if isinstance(stats, list) and stats else stats
 
@@ -43,25 +45,35 @@ try:
 except Exception:
     pass
 
-# últimos jogos (até 10)
+# últimos jogos (até 10) — usando pandas para datetimes
 fixtures = api_client.fixtures(team["team_id"], season) or []
 for m in fixtures:
-    m["_d"] = ui_utils.parse_date(m["fixture"]["date"])
-fixtures = sorted(fixtures, key=lambda x: x.get("_d") or ui_utils.parse_date("1970-01-01"), reverse=True)
+    try:
+        m["_d"] = pd.to_datetime(m["fixture"]["date"], errors="coerce")
+    except Exception:
+        m["_d"] = pd.NaT
+fixtures = sorted(
+    fixtures,
+    key=lambda x: x.get("_d") if x.get("_d") is not None else pd.Timestamp(0),
+    reverse=True,
+)
 
 last_games = []
 for fx in fixtures[:10]:
-    gh, ga = fx["goals"]["home"], fx["goals"]["away"]
-    home = fx["teams"]["home"]; away = fx["teams"]["away"]
-    is_home = (home["id"] == team["team_id"])
+    gh = (fx.get("goals") or {}).get("home")
+    ga = (fx.get("goals") or {}).get("away")
+    home = (fx.get("teams") or {}).get("home", {})
+    away = (fx.get("teams") or {}).get("away", {})
+    is_home = home.get("id") == team["team_id"]
     our_goals = gh if is_home else ga
     opp_goals = ga if is_home else gh
     res = "—"
     if our_goals is not None and opp_goals is not None:
         res = "V" if our_goals > opp_goals else ("D" if our_goals < opp_goals else "E")
     last_games.append({
-        "date": str(fx["fixture"]["date"])[:19],
-        "home": home["name"], "away": away["name"],
+        "date": str((fx.get("fixture") or {}).get("date"))[:19],
+        "home": home.get("name", "-"),
+        "away": away.get("name", "-"),
         "score": f"{gh}-{ga}",
         "res": res
     })
@@ -71,15 +83,16 @@ next_fx = api_client.fixtures(team["team_id"], season, next=1)
 next_context = None
 if next_fx:
     fx = next_fx[0]
-    home = fx["teams"]["home"]; away = fx["teams"]["away"]
-    is_home = (home["id"] == team["team_id"])
+    home = (fx.get("teams") or {}).get("home", {})
+    away = (fx.get("teams") or {}).get("away", {})
+    is_home = home.get("id") == team["team_id"]
     opp = away if is_home else home
     next_context = {
-        "fixture_id": fx["fixture"]["id"],
-        "date": fx["fixture"].get("date"),
-        "opponent": {"id": opp["id"], "name": opp["name"], "logo": opp["logo"]},
+        "fixture_id": (fx.get("fixture") or {}).get("id"),
+        "date": (fx.get("fixture") or {}).get("date"),
+        "opponent": {"id": opp.get("id"), "name": opp.get("name"), "logo": opp.get("logo")},
         "is_home": is_home,
-        "round": fx["league"].get("round"),
+        "round": (fx.get("league") or {}).get("round"),
     }
 
 context = {
@@ -96,14 +109,13 @@ context = {
 # Debug curto do contexto e saúde da IA
 # ---------------------------------------------------------------------
 with st.expander("🔧 Debug da IA", expanded=False):
-    st.code(json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in context.items()}, ensure_ascii=False, indent=2))
-    st.caption(f"Modelo: {ai._DEFAULT_MODEL} • Tem OPENAI_API_KEY: {'✅' if st.secrets.get('OPENAI_API_KEY') or st.session_state.get('OPENAI_API_KEY') or True else '❓'}")
-
+    try_sizes = {k: (len(v) if isinstance(v, list) else v) for k, v in context.items()}
+    st.code(json.dumps(try_sizes, ensure_ascii=False, indent=2))
+    st.caption(f"Modelo: {ai._DEFAULT_MODEL} • OPENAI_API_KEY definido? {'✅' if bool(st.secrets.get('OPENAI_API_KEY') or st.session_state.get('OPENAI_API_KEY') or True) else '❓'}")
+    
 # ---------------------------------------------------------------------
-# Insights automáticos
+# Renderizador de cartões
 # ---------------------------------------------------------------------
-st.subheader("⚡ Insights automáticos")
-
 def _render_cards(cards):
     for ins in cards:
         with st.container(border=True):
@@ -136,6 +148,11 @@ def _render_cards(cards):
             if ins.get("timeframe"): meta.append(f"Janela: {ins['timeframe']}")
             if meta:
                 st.caption(" • ".join(meta))
+
+# ---------------------------------------------------------------------
+# Insights automáticos
+# ---------------------------------------------------------------------
+st.subheader("⚡ Insights automáticos")
 
 if st.button("🔁 Regerar insights automáticos"):
     st.session_state.pop("auto_cards", None)
