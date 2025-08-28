@@ -4,6 +4,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from core import api_client, ui_utils
+from core.cache import render_cache_controls
+render_cache_controls()  # mostra: última atualização + botões
 
 st.title("📊 Desempenho do Time — Série B")
 
