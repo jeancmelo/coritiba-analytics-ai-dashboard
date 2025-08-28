@@ -5,23 +5,31 @@ import streamlit as st
 import pandas as pd
 from core import api_client
 from core.cache import render_cache_controls
-render_cache_controls()  # mostra: última atualização + botões
+render_cache_controls()
 
 PAGE_TITLE = "📊 Visão Geral"
 st.title(PAGE_TITLE)
 
 # ----------------------- filtros / header -----------------------
 season = st.sidebar.selectbox("Temporada", [2025, 2024, 2023], index=0)
-team = api_client.find_team("Coritiba")
-league = api_client.autodetect_league(team["team_id"], season, "Brazil")
+
+# IDs fixos do projeto
+TEAM_ID = 147        # Coritiba
+LEAGUE_ID = 72       # Serie B
+
+# busca determinística por ID (evita search/autodetect)
+team = api_client.team_by_id(TEAM_ID)
+league = api_client.league_by_id(LEAGUE_ID)
 
 c1, c2, c3 = st.columns([1, 4, 1])
 with c1:
-    st.image(team["team_logo"], width=72)
+    if team.get("team_logo"):
+        st.image(team["team_logo"], width=72)
 with c2:
-    st.subheader(f"{team['team_name']} — {season} • {league['league_name']}")
+    st.subheader(f"{team.get('team_name','Coritiba')} — {season} • {league.get('league_name','Série B')}")
 with c3:
-    st.image(league["league_logo"], width=72)
+    if league.get("league_logo"):
+        st.image(league["league_logo"], width=72)
 
 st.markdown("---")
 
