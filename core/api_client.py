@@ -1,6 +1,32 @@
 # core/api_client.py
 from core.cache import get_json
 
+def team_by_id(team_id: int):
+    """Busca um time pelo ID e retorna dict enxuto."""
+    data = get_json("/teams", {"id": team_id})
+    for item in data.get("response", []):
+        t = item.get("team", {}) or {}
+        v = item.get("venue", {}) or {}
+        return {
+            "team_id": t.get("id"),
+            "team_name": t.get("name"),
+            "team_logo": t.get("logo"),
+            "venue_name": v.get("name"),
+        }
+    return {"team_id": team_id, "team_name": "Time", "team_logo": None, "venue_name": None}
+
+def league_by_id(league_id: int):
+    """Busca liga pelo ID (para ter nome/logo)."""
+    data = get_json("/leagues", {"id": league_id})
+    for item in data.get("response", []):
+        lg = item.get("league", {}) or {}
+        return {
+            "league_id": lg.get("id"),
+            "league_name": lg.get("name"),
+            "league_logo": lg.get("logo"),
+        }
+    return {"league_id": league_id, "league_name": f"Liga {league_id}", "league_logo": None}
+    
 # ------------------- TEAMS --------------------
 def find_team(name: str):
     data = get_json("/teams", {"search": name})
