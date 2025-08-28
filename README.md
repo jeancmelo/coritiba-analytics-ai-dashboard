@@ -91,9 +91,6 @@ Esse MVP foi pensado como **projeto de portfólio**, mas também pode ser expand
 ### Desempenho do Time
 ![Desempenho](docs/screenshots/desempenhotime.png)
 
-### Elenco & Jogadores
-![Elenco](docs/screenshots/jogadores.png)
-
 ### Adversário
 ![Adversário](docs/screenshots/adversario.png)
 
