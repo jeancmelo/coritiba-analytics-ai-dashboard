@@ -24,27 +24,50 @@ def http_session(api_key: str):
 
 def _api_key():
     """
-    Busca a API key do API-Football em:
-    1) st.secrets["API_FOOTBALL_KEY"] (Streamlit Cloud / secrets.toml)
-    2) st.secrets["API_FOOTBALL"] (fallback)
-    3) variáveis de ambiente (deploys alternativos)
+    Procura a chave da API-Sports (API-Football) em:
+    1) st.secrets["APISPORTS_KEY"]
+    2) Outros nomes comuns em st.secrets
+    3) Variáveis de ambiente
     """
-    # 1) Streamlit Secrets (preferencial)
+    # 1) Nome principal que você está usando
     try:
-        if "API_FOOTBALL_KEY" in st.secrets:
-            return st.secrets["API_FOOTBALL_KEY"]
-        if "API_FOOTBALL" in st.secrets:
-            return st.secrets["API_FOOTBALL"]
+        if "APISPORTS_KEY" in st.secrets and st.secrets["APISPORTS_KEY"]:
+            return st.secrets["APISPORTS_KEY"]
     except Exception:
         pass
 
-    # 2) Ambiente
-    key = os.environ.get("API_FOOTBALL_KEY") or os.environ.get("API_FOOTBALL")
+    # 2) Alternativos (caso mude no futuro)
+    try:
+        for k in ("API_FOOTBALL_KEY", "API_FOOTBALL", "FOOTBALL_API_KEY", "APIFOOTBALL_KEY"):
+            if k in st.secrets and st.secrets[k]:
+                return st.secrets[k]
+    except Exception:
+        pass
+
+    # 3) Variáveis de ambiente
+    key = (
+        os.environ.get("APISPORTS_KEY")
+        or os.environ.get("API_FOOTBALL_KEY")
+        or os.environ.get("API_FOOTBALL")
+        or os.environ.get("FOOTBALL_API_KEY")
+        or os.environ.get("APIFOOTBALL_KEY")
+    )
     if key:
         return key
 
-    raise RuntimeError("API_FOOTBALL_KEY não configurado nos Secrets/Env.")
-
+    # 4) Mensagem de ajuda
+    existing = []
+    try:
+        existing = list(getattr(st, "secrets", {}).keys())
+    except Exception:
+        pass
+    raise RuntimeError(
+        "APISPORTS_KEY não configurado nos Secrets/Env.\n"
+        "• No Streamlit Cloud, vá em: Manage app → Settings → Secrets e salve:\n"
+        '  APISPORTS_KEY = "SUA_CHAVE_AQUI"\n'
+        "• Depois, reinicie o app (⋮ → Restart).\n"
+        f"Chaves encontradas em st.secrets: {existing}"
+    )
 # -------------------- “forçar refresh” por sessão --------------------
 def _refresh_nonce():
     return st.session_state.get("refresh_key", 0)
