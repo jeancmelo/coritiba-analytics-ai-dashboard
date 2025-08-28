@@ -94,7 +94,6 @@ Esse MVP foi pensado como **projeto de portfólio**, mas também pode ser expand
 
 👤 Autor
 
-Jean Melo
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Jean%20Melo-blue?logo=linkedin)](https://pt.linkedin.com/in/jeancmelo)
 
  
