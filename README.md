@@ -78,27 +78,23 @@ Esse MVP foi pensado como **projeto de portfólio**, mas também pode ser expand
 ## 📷 Prints do Dashboard
 
 ### Página inicial
-![Visão Geral](docs/screenshots/visao_geral.png)
+![Visão Geral](docs/screenshots/visaogeral.png)
 
 ### Partidas
 ![Partidas](docs/screenshots/partidas.png)
 
 ### Desempenho do Time
-![Desempenho](docs/screenshots/desempenho.png)
+![Desempenho](docs/screenshots/desempenhotime.png)
 
 ### Elenco & Jogadores
-![Elenco](docs/screenshots/elenco.png)
+![Elenco](docs/screenshots/jogadores.png)
 
 ### Adversário
 ![Adversário](docs/screenshots/adversario.png)
 
-> As imagens estão salvas na pasta `docs/screenshots/` para facilitar a visualização.
+👤 Autor
 
----
+Jean Melo
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Jean%20Melo-blue?logo=linkedin)](https://pt.linkedin.com/in/jeancmelo)
 
-## ⚡ Como rodar localmente
-
-1. Clone este repositório:
-   ```bash
-   git clone https://github.com/jeancmelo/coritiba-analytics-ai-dashboard.git
-   cd coritiba-analytics-ai-dashboard
+ 
