@@ -5,8 +5,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # ==============================
 # IDs FIXOS (conforme solicitado)
 # ==============================
-CORITIBA_ID = 147       # Coritiba Foot Ball Club
-BR_SERIE_B_ID = 72      # Campeonato Brasileiro Série B (2025)
+CORITIBA_ID = 121       # Coritiba Foot Ball Club
+BR_SERIE_B_ID = 71      # Campeonato Brasileiro Série B (2025)
 # Obs: o "season" continua vindo do select da UI (2025/2024/2023 etc.)
 
 BASE = "https://v3.football.api-sports.io"
